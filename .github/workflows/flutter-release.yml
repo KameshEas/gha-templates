@@ -32,6 +32,21 @@ on:
         description: Prefix used for uploaded build artifacts, e.g. the app name
         type: string
         required: true
+      enable-auto-versioning:
+        description: >
+          Resolve version + build number from repo Variables instead of pubspec.yaml,
+          auto-incrementing them each release (patch rolls into minor after 10, minor
+          into major after 9). Requires secrets.VARS_PAT.
+        type: boolean
+        default: false
+      version-variable:
+        description: Repo Variable name holding MAJOR.MINOR.PATCH (only used when enable-auto-versioning)
+        type: string
+        default: ANDROID_VERSION
+      build-number-variable:
+        description: Repo Variable name holding the integer build number (only used when enable-auto-versioning)
+        type: string
+        default: ANDROID_BUILD_NUMBER
     secrets:
       ANDROID_KEYSTORE_BASE64:
         required: true
@@ -52,6 +67,9 @@ on:
       GCLOUD_SERVICE_ACCOUNT_CREDENTIALS:
         required: false
       PACKAGE_NAME:
+        required: false
+      VARS_PAT:
+        description: Fine-grained PAT with "Variables Read and write" on this repo, required when enable-auto-versioning is true
         required: false
 
 concurrency:
@@ -90,6 +108,32 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # Resolves and persists the next version/build-number pair from repo Variables.
+  # Runs once per workflow run (not once per build job) so the AAB and APK below
+  # share one version instead of each incrementing it separately.
+  resolve_version:
+    name: resolve_version
+    needs: detect_version_change
+    runs-on: ubuntu-latest
+    concurrency:
+      group: version-resolve-${{ github.repository }}
+      cancel-in-progress: false
+    if: |
+      inputs.enable-auto-versioning && github.event_name == 'push' &&
+      (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
+       (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      build_number: ${{ steps.resolve.outputs.build-number }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: resolve
+        uses: KameshEas/gha-templates/.github/actions/resolve-version@v1
+        with:
+          version-variable: ${{ inputs.version-variable }}
+          build-number-variable: ${{ inputs.build-number-variable }}
+          github-token: ${{ secrets.VARS_PAT }}
+
   test_code_quality:
     name: test_code_quality
     runs-on: ubuntu-latest
@@ -114,11 +158,12 @@ jobs:
   # needed downstream (Shorebird release itself, or a Play Store deploy).
   build_release_android:
     name: build_release_android
-    needs: detect_version_change
+    needs: [detect_version_change, resolve_version]
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
     if: |
+      always() && (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
       github.event_name == 'push' && (inputs.enable-shorebird || inputs.enable-play-store) &&
       (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
        (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
@@ -153,9 +198,15 @@ jobs:
             exit 1
           fi
 
-          PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
-          BUILD_NAME=$(echo "$PKG_VER" | cut -d+ -f1)
-          BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
+          if [ "${{ inputs.enable-auto-versioning }}" = "true" ]; then
+            BUILD_NAME="${{ needs.resolve_version.outputs.version }}"
+            BUILD_NUMBER="${{ needs.resolve_version.outputs.build_number }}"
+          else
+            PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
+            BUILD_NAME=$(echo "$PKG_VER" | cut -d+ -f1)
+            BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
+          fi
+          echo "Building version ${BUILD_NAME}+${BUILD_NUMBER}"
 
           if [ "${{ inputs.enable-shorebird }}" = "true" ]; then
             echo "🐦 Building Shorebird AAB..."
@@ -186,11 +237,12 @@ jobs:
 
   build_firebase_apk:
     name: build_firebase_apk
-    needs: detect_version_change
+    needs: [detect_version_change, resolve_version]
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
     if: |
+      always() && (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
       github.event_name == 'push' && inputs.enable-firebase-distribution &&
       (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
        (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
@@ -216,9 +268,14 @@ jobs:
             exit 1
           fi
 
-          PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
-          BUILD_NAME=$(echo "$PKG_VER" | cut -d+ -f1)
-          BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
+          if [ "${{ inputs.enable-auto-versioning }}" = "true" ]; then
+            BUILD_NAME="${{ needs.resolve_version.outputs.version }}"
+            BUILD_NUMBER="${{ needs.resolve_version.outputs.build_number }}"
+          else
+            PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
+            BUILD_NAME=$(echo "$PKG_VER" | cut -d+ -f1)
+            BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
+          fi
 
           echo "📱 Building Firebase APK..."
           flutter build apk \
@@ -262,17 +319,30 @@ jobs:
       - name: Publish patch
         env:
           SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+          GH_TOKEN: ${{ secrets.VARS_PAT }}
         shell: bash
         run: |
           set -euo pipefail
           flutter pub get
 
-          PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //;s/"//g')
-          echo "🐦 Creating OTA Patch for $PKG_VER"
+          # A patch targets the version already released in a *previous* run (this
+          # job only runs when detect_version_change found no bump this push), so
+          # it must read the current value, never advance it.
+          if [ "${{ inputs.enable-auto-versioning }}" = "true" ]; then
+            RELEASE_VERSION=$(curl -sS \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/variables/${{ inputs.version-variable }}" \
+              | grep -o '"value":"[^"]*"' | head -1 | sed 's/"value":"//; s/"$//')
+          else
+            RELEASE_VERSION=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //;s/"//g' | cut -d+ -f1)
+          fi
+          echo "🐦 Creating OTA Patch for $RELEASE_VERSION"
 
           shorebird patch \
             --platforms=android \
-            --release-version="$PKG_VER" \
+            --release-version="$RELEASE_VERSION" \
             --no-confirm
 
           echo "✅ OTA Patch Published"

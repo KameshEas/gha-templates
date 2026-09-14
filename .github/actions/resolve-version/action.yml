@@ -1,0 +1,121 @@
+name: Resolve auto-incremented version + build number
+description: >
+  Reads the app's version/build-number repo Variables, advances them (patch +1,
+  rolling into minor after 10 and minor into major after 9), advances the build
+  number by 1, persists both back via the GitHub API, and outputs the new values.
+  Uses curl directly (not the gh CLI) so it works in minimal build containers.
+
+inputs:
+  version-variable:
+    description: Name of the repo Variable holding MAJOR.MINOR.PATCH
+    required: false
+    default: ANDROID_VERSION
+  build-number-variable:
+    description: Name of the repo Variable holding the integer build number
+    required: false
+    default: ANDROID_BUILD_NUMBER
+  github-token:
+    description: 'Fine-grained PAT with "Variables: Read and write" on this repo'
+    required: true
+
+outputs:
+  version:
+    description: The newly resolved MAJOR.MINOR.PATCH
+    value: ${{ steps.resolve.outputs.version }}
+  build-number:
+    description: The newly resolved build number
+    value: ${{ steps.resolve.outputs.build-number }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        VERSION_VAR: ${{ inputs.version-variable }}
+        BUILD_NUMBER_VAR: ${{ inputs.build-number-variable }}
+      run: |
+        set -euo pipefail
+
+        API="https://api.github.com/repos/${REPO}/actions/variables"
+
+        fetch_variable() {
+          local name="$1" code body
+          body=$(curl -sS -w '\n%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${API}/${name}")
+          code=$(echo "$body" | tail -n1)
+          body=$(echo "$body" | sed '$d')
+          if [ "$code" = "200" ]; then
+            echo "$body" | grep -o '"value":"[^"]*"' | head -1 | sed 's/"value":"//; s/"$//'
+          else
+            echo ""
+          fi
+        }
+
+        write_variable() {
+          local name="$1" value="$2" code
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${API}/${name}")
+          if [ "$code" = "200" ]; then
+            curl -sS -o /dev/null --fail \
+              -X PATCH \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -d "{\"name\":\"${name}\",\"value\":\"${value}\"}" \
+              "${API}/${name}"
+          else
+            curl -sS -o /dev/null --fail \
+              -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -d "{\"name\":\"${name}\",\"value\":\"${value}\"}" \
+              "${API}"
+          fi
+        }
+
+        CURRENT_VERSION="$(fetch_variable "$VERSION_VAR")"
+        if [ -z "$CURRENT_VERSION" ]; then
+          CURRENT_VERSION=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g' | cut -d+ -f1)
+          echo "ℹ️  ${VERSION_VAR} not set yet, bootstrapping from pubspec.yaml: ${CURRENT_VERSION}"
+        fi
+
+        MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
+        MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
+        PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
+
+        PATCH=$((PATCH + 1))
+        if [ "$PATCH" -gt 10 ]; then
+          PATCH=0
+          MINOR=$((MINOR + 1))
+          if [ "$MINOR" -gt 9 ]; then
+            MINOR=0
+            MAJOR=$((MAJOR + 1))
+          fi
+        fi
+        NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+        CURRENT_BUILD_NUMBER="$(fetch_variable "$BUILD_NUMBER_VAR")"
+        if [ -z "$CURRENT_BUILD_NUMBER" ]; then
+          CURRENT_BUILD_NUMBER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g' | cut -d+ -f2)
+          [ -z "$CURRENT_BUILD_NUMBER" ] && CURRENT_BUILD_NUMBER=0
+          echo "ℹ️  ${BUILD_NUMBER_VAR} not set yet, bootstrapping from pubspec.yaml: ${CURRENT_BUILD_NUMBER}"
+        fi
+        NEXT_BUILD_NUMBER=$((CURRENT_BUILD_NUMBER + 1))
+
+        write_variable "$VERSION_VAR" "$NEXT_VERSION"
+        write_variable "$BUILD_NUMBER_VAR" "$NEXT_BUILD_NUMBER"
+
+        echo "✅ Resolved version ${CURRENT_VERSION} -> ${NEXT_VERSION}, build number ${CURRENT_BUILD_NUMBER} -> ${NEXT_BUILD_NUMBER}"
+
+        echo "version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "build-number=${NEXT_BUILD_NUMBER}" >> "$GITHUB_OUTPUT"

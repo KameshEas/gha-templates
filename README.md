@@ -72,8 +72,24 @@ Non-sensitive identifiers (`android-application-id`, `keystore-filename`, `artif
 
 **First Play Store deploy caveat:** `fastlane supply` can only *update* an app already listed in Play Console — it cannot create one. The first release for any new app must be uploaded manually through the Play Console before `enable-play-store: true` is turned on.
 
+#### Optional: auto-incrementing version + build number (`enable-auto-versioning: true`)
+Instead of reading `--build-name`/`--build-number` from `pubspec.yaml`, resolve and auto-advance them from two repo [Variables](https://docs.github.com/actions/learn-github-actions/variables) each release:
+
+- Build number: `+1` every release.
+- Version (`MAJOR.MINOR.PATCH`): patch `+1`, rolling into minor after **10** and minor into major after **9** — e.g. `1.0.1 → … → 1.0.10 → 1.1.0 → … → 1.9.10 → 2.0.0`.
+
+```yaml
+with:
+  enable-auto-versioning: true
+  # version-variable / build-number-variable default to ANDROID_VERSION / ANDROID_BUILD_NUMBER
+secrets: inherit
+```
+
+Requires `secrets.VARS_PAT` — a **fine-grained PAT** with **Variables: Read and write** on the repo (the automatic `GITHUB_TOKEN` is explicitly blocked from managing Actions Variables, even with `actions: write` permission). Bootstrap the two Variables to the app's current version/build number before first use, or the action will bootstrap them from `pubspec.yaml` itself on first run — either way, once enabled, `pubspec.yaml`'s `version:` line is no longer authoritative; check the `ANDROID_VERSION`/`ANDROID_BUILD_NUMBER` repo Variables for the real shipped version.
+
 ## Composite actions
 
 - `setup-flutter` — installs JDK 17, restores pub/gradle caches, runs `flutter pub get`. `ensure-env-file: true` opt-in for apps using `flutter_dotenv`.
 - `decode-android-keystore` — decodes a base64 keystore to `android/app/<keystore-filename>` and exports `ANDROID_KEYSTORE_PATH`/`ANDROID_KEY_ALIAS`/`ANDROID_KEYSTORE_PASSWORD`/`ANDROID_KEY_PASSWORD` env vars for Gradle signing.
 - `setup-node-expo` — Node + npm ci for RN/Expo repos.
+- `resolve-version` — reads/advances the `ANDROID_VERSION`/`ANDROID_BUILD_NUMBER` repo Variables per the odometer rule above and persists the new values via the GitHub API (curl, not the `gh` CLI, so it works in minimal build containers). Used internally by `flutter-release.yml` when `enable-auto-versioning: true`.
