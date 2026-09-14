@@ -32,6 +32,14 @@ on:
         description: Prefix used for uploaded build artifacts, e.g. the app name
         type: string
         required: true
+      ensure-env-file:
+        description: >
+          Copy .env.example to .env (or create an empty .env) before any build/test
+          step. Set true for apps using flutter_dotenv with .env declared as a
+          pubspec.yaml asset — otherwise flutter build/test fails with
+          "No file or variants found for asset: .env".
+        type: boolean
+        default: false
       enable-auto-versioning:
         description: >
           Resolve version + build number from repo Variables instead of pubspec.yaml,
@@ -83,7 +91,7 @@ jobs:
   detect_version_change:
     name: detect_version_change
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     if: github.event_name == 'push'
     outputs:
       version_changed: ${{ steps.check.outputs.changed }}
@@ -116,7 +124,7 @@ jobs:
     name: resolve_version
     needs: detect_version_change
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     concurrency:
       group: version-resolve-${{ github.repository }}
       cancel-in-progress: false
@@ -141,11 +149,13 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
-    timeout-minutes: 10
+    timeout-minutes: 20
     if: "!contains(github.ref, 'tags')"
     steps:
       - uses: actions/checkout@v4
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+        with:
+          ensure-env-file: ${{ inputs.ensure-env-file }}
 
       - name: Analyze
         continue-on-error: true
@@ -167,7 +177,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
-    timeout-minutes: 10
+    timeout-minutes: 20
     if: |
       always() &&
       (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
@@ -178,6 +188,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+        with:
+          ensure-env-file: ${{ inputs.ensure-env-file }}
 
       - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
         with:
@@ -210,7 +222,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
-    timeout-minutes: 20
+    timeout-minutes: 35
     if: |
       always() &&
       (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
@@ -221,6 +233,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+        with:
+          ensure-env-file: ${{ inputs.ensure-env-file }}
 
       - if: inputs.enable-shorebird
         name: Install Shorebird
@@ -292,7 +306,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
-    timeout-minutes: 15
+    timeout-minutes: 25
     if: |
       always() &&
       (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
@@ -303,6 +317,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+        with:
+          ensure-env-file: ${{ inputs.ensure-env-file }}
 
       - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
         with:
@@ -356,7 +372,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
-    timeout-minutes: 15
+    timeout-minutes: 25
     if: |
       github.event_name == 'push' && inputs.enable-shorebird &&
       github.ref == format('refs/heads/{0}', inputs.prod-branch) &&
@@ -364,6 +380,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+        with:
+          ensure-env-file: ${{ inputs.ensure-env-file }}
 
       - name: Install Shorebird
         shell: bash
@@ -408,7 +426,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
-    timeout-minutes: 10
+    timeout-minutes: 20
     if: github.event_name == 'push' && inputs.enable-firebase-distribution && github.ref == format('refs/heads/{0}', inputs.dev-branch)
     environment: development
     steps:
@@ -479,7 +497,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
-    timeout-minutes: 10
+    timeout-minutes: 20
     if: github.event_name == 'push' && inputs.enable-play-store && github.ref == format('refs/heads/{0}', inputs.dev-branch)
     environment: development
     steps:
@@ -549,7 +567,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
-    timeout-minutes: 10
+    timeout-minutes: 20
     if: |
       github.event_name == 'push' && inputs.enable-play-store &&
       github.ref == format('refs/heads/{0}', inputs.prod-branch) &&

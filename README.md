@@ -29,7 +29,9 @@ jobs:
 ### `flutter-release.yml`
 Version-gated Android build → optional Shorebird OTA release/patch → optional Firebase App Distribution → optional Google Play Console deploy (internal on `dev-branch`, production on `prod-branch`). Each release channel is off by default — an app only pays for (and only needs secrets for) the channels it enables.
 
-**Fail-fast job order:** cheapest checks run first so a doomed release fails in minutes, not after a full multi-arch build. `test_code_quality` (analyze/test, ~1-2 min) gates `smoke_test_release_build` (a single-ABI, minified `flutter build apk`, ~3-4 min, exercises the exact signing + R8/ProGuard pass the full build uses) which gates the expensive multi-arch `build_release_android`/`build_firebase_apk` jobs (~7-10 min). Every job also has a `timeout-minutes` ceiling so a hang can't run indefinitely.
+**Fail-fast job order:** cheapest checks run first so a doomed release fails sooner, not after a full multi-arch build. `test_code_quality` (analyze/test) gates `smoke_test_release_build` (a single-ABI, minified `flutter build apk`, exercises the exact signing + R8/ProGuard pass the full build uses) which gates the expensive multi-arch `build_release_android`/`build_firebase_apk` jobs. Every job also has a `timeout-minutes` ceiling (10-35 min depending on the job) — this is a safety net against a genuine hang, not a duration SLA, so it's sized generously against slow/cold runners rather than tightly against expected run time.
+
+**`ensure-env-file: true`** — set this if the app uses `flutter_dotenv` with `.env` declared as a `pubspec.yaml` asset. Without it, every `flutter build`/`flutter test`/`shorebird` step fails with `No file or variants found for asset: .env` because CI has no real `.env` (it's gitignored). This threads through to every job that actually builds/tests the app (`test_code_quality`, `smoke_test_release_build`, `build_release_android`, `build_firebase_apk`, `build_patch_shorebird`); the deploy jobs don't need it since they only download prebuilt artifacts.
 
 ```yaml
 jobs:
