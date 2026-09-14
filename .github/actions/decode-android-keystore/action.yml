@@ -22,9 +22,31 @@ runs:
   steps:
     - name: Decode keystore
       shell: bash
+      env:
+        KEYSTORE_BASE64: ${{ inputs.keystore-base64 }}
       run: |
+        set -euo pipefail
         mkdir -p android/app
-        printf "%s" "${{ inputs.keystore-base64 }}" | base64 --decode > "android/app/${{ inputs.keystore-filename }}"
+
+        if [ -z "${KEYSTORE_BASE64:-}" ]; then
+          echo "❌ keystore-base64 input is empty — check the ANDROID_KEYSTORE_BASE64 secret/SOPS entry is actually set."
+          exit 1
+        fi
+
+        # Strip whitespace/CRLF (e.g. from a wrapped or Windows-edited source) before
+        # decoding — valid base64 never contains whitespace, so this is a no-op for
+        # clean input and fixes the common "base64: invalid input" cause otherwise.
+        CLEAN_B64=$(printf "%s" "$KEYSTORE_BASE64" | tr -d '[:space:]')
+
+        if ! printf "%s" "$CLEAN_B64" | base64 --decode > "android/app/${{ inputs.keystore-filename }}"; then
+          echo "❌ base64 decode failed — keystore-base64 input (length ${#CLEAN_B64} after stripping whitespace) is not valid base64."
+          exit 1
+        fi
+
+        if [ ! -s "android/app/${{ inputs.keystore-filename }}" ]; then
+          echo "❌ Decoded keystore file is empty."
+          exit 1
+        fi
 
         KEY_PASSWORD="${{ inputs.key-password }}"
         if [ -z "$KEY_PASSWORD" ]; then

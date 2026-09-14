@@ -65,6 +65,10 @@ runs:
         fi
 
         while IFS= read -r line; do
+          # Strip a trailing \r in case the plaintext source had CRLF line endings
+          # (e.g. saved from Notepad/PowerShell on Windows) — bash's read only
+          # splits on \n, so a stray \r would otherwise end up baked into the value.
+          line="${line%$'\r'}"
           case "$line" in
             ''|'#'*) continue ;;
           esac
