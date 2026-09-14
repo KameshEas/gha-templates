@@ -58,29 +58,37 @@ runs:
         }
 
         write_variable() {
-          local name="$1" value="$2" code
-          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+          local name="$1" value="$2" exists_code method url resp code body
+          exists_code=$(curl -sS -o /dev/null -w '%{http_code}' \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "${API}/${name}")
-          if [ "$code" = "200" ]; then
-            curl -sS -o /dev/null --fail \
-              -X PATCH \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -d "{\"name\":\"${name}\",\"value\":\"${value}\"}" \
-              "${API}/${name}"
+
+          if [ "$exists_code" = "200" ]; then
+            method="PATCH"; url="${API}/${name}"
           else
-            curl -sS -o /dev/null --fail \
-              -X POST \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -d "{\"name\":\"${name}\",\"value\":\"${value}\"}" \
-              "${API}"
+            method="POST"; url="${API}"
           fi
+
+          resp=$(curl -sS -w '\n%{http_code}' \
+            -X "$method" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d "{\"name\":\"${name}\",\"value\":\"${value}\"}" \
+            "$url")
+          code=$(echo "$resp" | tail -n1)
+          body=$(echo "$resp" | sed '$d')
+
+          case "$code" in
+            2??) ;;
+            *)
+              echo "❌ ${method} ${url} failed with HTTP ${code}:"
+              echo "$body"
+              exit 1
+              ;;
+          esac
         }
 
         CURRENT_VERSION="$(fetch_variable "$VERSION_VAR")"
