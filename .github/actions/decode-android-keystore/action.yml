@@ -1,0 +1,39 @@
+name: Decode Android keystore
+description: Decodes a base64 Android release keystore and exports signing env vars
+
+inputs:
+  keystore-base64:
+    required: true
+  keystore-filename:
+    description: Filename to write the decoded keystore as, under android/app/ (e.g. everwith-release.jks)
+    required: true
+  key-alias:
+    required: true
+  store-password:
+    description: Password protecting the keystore itself
+    required: true
+  key-password:
+    description: Password protecting the key alias's private key. Falls back to store-password if omitted.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Decode keystore
+      shell: bash
+      run: |
+        mkdir -p android/app
+        printf "%s" "${{ inputs.keystore-base64 }}" | base64 --decode > "android/app/${{ inputs.keystore-filename }}"
+
+        KEY_PASSWORD="${{ inputs.key-password }}"
+        if [ -z "$KEY_PASSWORD" ]; then
+          KEY_PASSWORD="${{ inputs.store-password }}"
+        fi
+
+        {
+          echo "ANDROID_KEYSTORE_PATH=$(pwd)/android/app/${{ inputs.keystore-filename }}"
+          echo "ANDROID_KEY_ALIAS=${{ inputs.key-alias }}"
+          echo "ANDROID_KEYSTORE_PASSWORD=${{ inputs.store-password }}"
+          echo "ANDROID_KEY_PASSWORD=$KEY_PASSWORD"
+        } >> "$GITHUB_ENV"

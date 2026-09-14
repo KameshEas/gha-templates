@@ -1,0 +1,61 @@
+name: Flutter CI (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      flutter-channel:
+        type: string
+        default: stable
+      analyze-fatal-warnings:
+        description: Fail the analyze step on warnings, not just errors
+        type: boolean
+        default: false
+      analyze-fatal-infos:
+        description: Fail the analyze step on infos, not just errors
+        type: boolean
+        default: false
+      test-continue-on-error:
+        description: Don't fail the workflow if flutter test fails (use while test infra is incomplete)
+        type: boolean
+        default: false
+      upload-coverage:
+        type: boolean
+        default: true
+
+jobs:
+  analyze-and-test:
+    name: Analyze & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ inputs.flutter-channel }}
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: |
+          flutter analyze \
+            ${{ inputs.analyze-fatal-warnings && '' || '--no-fatal-warnings' }} \
+            ${{ inputs.analyze-fatal-infos && '' || '--no-fatal-infos' }}
+
+      - name: Test
+        run: flutter test
+        continue-on-error: ${{ inputs.test-continue-on-error }}
+
+      - name: Test with Coverage
+        if: inputs.upload-coverage
+        run: flutter test --coverage
+        continue-on-error: ${{ inputs.test-continue-on-error }}
+
+      - name: Upload coverage to Codecov
+        if: inputs.upload-coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage/lcov.info
+          flags: flutter
+          fail_ci_if_error: false

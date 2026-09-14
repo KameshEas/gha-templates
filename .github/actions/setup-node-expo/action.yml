@@ -1,0 +1,19 @@
+name: Setup Node for Expo/React Native
+description: Installs Node, restores npm cache, and runs npm ci
+
+inputs:
+  node-version:
+    required: false
+    default: "20"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+
+    - name: Install dependencies
+      shell: bash
+      run: npm ci

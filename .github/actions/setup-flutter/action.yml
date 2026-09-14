@@ -1,0 +1,60 @@
+name: Setup Flutter build environment
+description: Installs system packages, configures Java, restores caches, and runs flutter pub get
+
+inputs:
+  restore-cache:
+    description: Whether to restore/save the pub-cache, gradle, and build caches
+    required: false
+    default: "true"
+  ensure-env-file:
+    description: Copy .env.example to .env (or create an empty .env) if the app uses flutter_dotenv and no .env exists
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install system packages
+      shell: bash
+      run: |
+        apt-get update -qq
+        apt-get install -y -qq openjdk-17-jdk-headless curl git unzip ruby-dev npm
+
+    - name: Configure Java
+      shell: bash
+      run: |
+        echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> "$GITHUB_ENV"
+        echo "/usr/lib/jvm/java-17-openjdk-amd64/bin" >> "$GITHUB_PATH"
+
+    - name: Ensure .env asset exists
+      if: inputs.ensure-env-file == 'true'
+      shell: bash
+      run: |
+        if [ ! -f .env ]; then
+          if [ -f .env.example ]; then
+            cp .env.example .env
+            echo "✓ Created .env from .env.example"
+          else
+            touch .env
+            echo "✓ Created empty .env"
+          fi
+        fi
+
+    - name: Restore caches
+      if: inputs.restore-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          .pub-cache/
+          .gradle/
+          build/
+        key: ${{ github.ref_name }}-${{ hashFiles('pubspec.lock') }}
+
+    - name: Flutter pub get
+      shell: bash
+      run: |
+        flutter --version
+        dart --version
+        flutter clean
+        flutter pub get
+        echo "✓ Build environment ready"

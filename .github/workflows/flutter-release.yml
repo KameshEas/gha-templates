@@ -1,0 +1,491 @@
+name: Flutter Release (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      keystore-filename:
+        description: Filename to decode the release keystore as, under android/app/ (e.g. everwith-release.jks)
+        type: string
+        required: true
+      dev-branch:
+        description: Branch that triggers a dev/internal deploy
+        type: string
+        default: development
+      prod-branch:
+        description: Branch that triggers a production deploy
+        type: string
+        default: prod
+      enable-shorebird:
+        type: boolean
+        default: false
+      enable-firebase-distribution:
+        type: boolean
+        default: false
+      enable-play-store:
+        type: boolean
+        default: false
+      play-track:
+        description: Play Console track used for the dev-branch deploy (prod-branch always deploys to "release")
+        type: string
+        default: internal
+      artifact-prefix:
+        description: Prefix used for uploaded build artifacts, e.g. the app name
+        type: string
+        required: true
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: true
+      ANDROID_KEY_ALIAS:
+        required: true
+      ANDROID_STORE_PASSWORD:
+        required: true
+      ANDROID_KEY_PASSWORD:
+        required: false
+      SHOREBIRD_TOKEN:
+        required: false
+      FIREBASE_ANDROID_APP_ID:
+        required: false
+      FIREBASE_SERVICE_ACCOUNT_CREDENTIALS:
+        required: false
+      FIREBASE_DISTRIBUTION_GROUPS:
+        required: false
+      GCLOUD_SERVICE_ACCOUNT_CREDENTIALS:
+        required: false
+      PACKAGE_NAME:
+        required: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  detect_version_change:
+    name: detect_version_change
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    outputs:
+      version_changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - id: check
+        shell: bash
+        run: |
+          set -e
+          CURRENT=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            PREVIOUS=$(git show HEAD^:pubspec.yaml | grep '^version:' | head -n1 | sed 's/version: //; s/"//g')
+          else
+            PREVIOUS=""
+          fi
+          echo "Current version: $CURRENT / Previous version: $PREVIOUS"
+          if [ "$CURRENT" != "$PREVIOUS" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test_code_quality:
+    name: test_code_quality
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/flutter:stable
+    if: "!contains(github.ref, 'tags')"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+
+      - name: Analyze
+        continue-on-error: true
+        shell: bash
+        run: dart analyze
+
+      - name: Test
+        shell: bash
+        run: flutter test
+
+  # Builds the release AAB. Uses Shorebird when enabled (registers an OTA-patchable
+  # release); otherwise a plain `flutter build appbundle`. Runs whenever the AAB is
+  # needed downstream (Shorebird release itself, or a Play Store deploy).
+  build_release_android:
+    name: build_release_android
+    needs: detect_version_change
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/flutter:stable
+    if: |
+      github.event_name == 'push' && (inputs.enable-shorebird || inputs.enable-play-store) &&
+      (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
+       (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
+    steps:
+      - uses: actions/checkout@v4
+      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+
+      - if: inputs.enable-shorebird
+        name: Install Shorebird
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/shorebirdtech/install/main/install.sh | bash
+          echo "$HOME/.shorebird/bin" >> $GITHUB_PATH
+
+      - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
+        with:
+          keystore-filename: ${{ inputs.keystore-filename }}
+          keystore-base64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          key-alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          store-password: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          key-password: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Build AAB
+        env:
+          SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ANDROID_KEYSTORE_PATH:-}" ] || [ ! -f "$ANDROID_KEYSTORE_PATH" ]; then
+            echo "❌ Keystore was not decoded (ANDROID_KEYSTORE_BASE64 secret missing or invalid)."
+            exit 1
+          fi
+
+          PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
+          BUILD_NAME=$(echo "$PKG_VER" | cut -d+ -f1)
+          BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
+
+          if [ "${{ inputs.enable-shorebird }}" = "true" ]; then
+            echo "🐦 Building Shorebird AAB..."
+            shorebird release android \
+              --build-name="$BUILD_NAME" \
+              --build-number="$BUILD_NUMBER" \
+              --no-confirm
+          else
+            echo "📦 Building plain AAB..."
+            flutter build appbundle \
+              --release \
+              --build-name="$BUILD_NAME" \
+              --build-number="$BUILD_NUMBER"
+          fi
+
+          echo ""
+          echo "📦 Verifying AAB..."
+          ls -lh build/app/outputs/bundle/release/
+          test -f build/app/outputs/bundle/release/app-release.aab
+          echo "✅ AAB build completed."
+
+      - name: artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ inputs.artifact-prefix }}-aab-${{ github.sha }}"
+          path: build/app/outputs/bundle/release/app-release.aab
+          retention-days: 3
+
+  build_firebase_apk:
+    name: build_firebase_apk
+    needs: detect_version_change
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/flutter:stable
+    if: |
+      github.event_name == 'push' && inputs.enable-firebase-distribution &&
+      (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
+       (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
+    steps:
+      - uses: actions/checkout@v4
+      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+
+      - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
+        with:
+          keystore-filename: ${{ inputs.keystore-filename }}
+          keystore-base64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          key-alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          store-password: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          key-password: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ANDROID_KEYSTORE_PATH:-}" ] || [ ! -f "$ANDROID_KEYSTORE_PATH" ]; then
+            echo "❌ Keystore was not decoded (ANDROID_KEYSTORE_BASE64 secret missing or invalid)."
+            exit 1
+          fi
+
+          PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
+          BUILD_NAME=$(echo "$PKG_VER" | cut -d+ -f1)
+          BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
+
+          echo "📱 Building Firebase APK..."
+          flutter build apk \
+            --release \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER"
+
+          echo ""
+          echo "📦 Verifying APK..."
+          ls -lh build/app/outputs/flutter-apk/
+          test -f build/app/outputs/flutter-apk/app-release.apk
+          echo "✅ APK build completed."
+
+      - name: artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ inputs.artifact-prefix }}-apk-${{ github.sha }}"
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 3
+
+  build_patch_shorebird:
+    name: build_patch_shorebird
+    needs: detect_version_change
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/flutter:stable
+    if: |
+      github.event_name == 'push' && inputs.enable-shorebird &&
+      github.ref == format('refs/heads/{0}', inputs.prod-branch) &&
+      needs.detect_version_change.outputs.version_changed == 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+
+      - name: Install Shorebird
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/shorebirdtech/install/main/install.sh | bash
+          echo "$HOME/.shorebird/bin" >> $GITHUB_PATH
+
+      - name: Publish patch
+        env:
+          SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+
+          PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //;s/"//g')
+          echo "🐦 Creating OTA Patch for $PKG_VER"
+
+          shorebird patch \
+            --platforms=android \
+            --release-version="$PKG_VER" \
+            --no-confirm
+
+          echo "✅ OTA Patch Published"
+
+  deploy_firebase_distribution:
+    name: deploy_firebase_distribution
+    needs: build_firebase_apk
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/flutter:stable
+    if: github.event_name == 'push' && inputs.enable-firebase-distribution && github.ref == format('refs/heads/{0}', inputs.dev-branch)
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+        with:
+          restore-cache: "false"
+
+      - name: download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: "${{ inputs.artifact-prefix }}-apk-${{ github.sha }}"
+          path: build/app/outputs/flutter-apk/
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: script
+        env:
+          FIREBASE_ANDROID_APP_ID: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
+          FIREBASE_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_CREDENTIALS }}
+          FIREBASE_DISTRIBUTION_GROUPS: ${{ secrets.FIREBASE_DISTRIBUTION_GROUPS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📦 Installing Firebase CLI..."
+          npm install -g firebase-tools
+
+          APK_PATH=$(find build/app/outputs/flutter-apk -name "*.apk" -type f | head -1)
+
+          if [ -z "$APK_PATH" ]; then
+            echo "⚠️  APK not found in build/app/outputs/flutter-apk/"
+            find build -name "*.apk" -type f 2>/dev/null || echo "No APK files found"
+            echo "Skipping Firebase distribution (APK optional for internal testing)"
+            exit 0
+          fi
+
+          if [ -z "$FIREBASE_ANDROID_APP_ID" ] || [ -z "$FIREBASE_SERVICE_ACCOUNT_CREDENTIALS" ]; then
+            echo "⚠️  Firebase variables not set, skipping Firebase distribution"
+            exit 0
+          fi
+
+          mkdir -p "$HOME/.firebase"
+          echo "$FIREBASE_SERVICE_ACCOUNT_CREDENTIALS" > "$HOME/.firebase/service-account.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.firebase/service-account.json"
+
+          PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //;s/"//g')
+          RELEASE_NOTES="Build ${PKG_VER} - $(date '+%Y-%m-%d %H:%M:%S')"
+
+          echo "🔥 Deploying to Firebase..."
+
+          DISTRIBUTE_ARGS=(appdistribution:distribute "$APK_PATH" \
+            --app "$FIREBASE_ANDROID_APP_ID" \
+            --release-notes "$RELEASE_NOTES")
+
+          if [ -n "$FIREBASE_DISTRIBUTION_GROUPS" ]; then
+            DISTRIBUTE_ARGS+=(--groups "$FIREBASE_DISTRIBUTION_GROUPS")
+          fi
+
+          env -u SHELLOPTS firebase "${DISTRIBUTE_ARGS[@]}"
+          echo "✅ Firebase deployment complete"
+
+  deploy_google_play_internal:
+    name: deploy_google_play_internal
+    needs: build_release_android
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/flutter:stable
+    if: github.event_name == 'push' && inputs.enable-play-store && github.ref == format('refs/heads/{0}', inputs.dev-branch)
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+        with:
+          restore-cache: "false"
+
+      - name: download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: "${{ inputs.artifact-prefix }}-aab-${{ github.sha }}"
+          path: build/app/outputs/bundle/release/
+
+      - name: script
+        env:
+          GCLOUD_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GCLOUD_SERVICE_ACCOUNT_CREDENTIALS }}
+          PACKAGE_NAME: ${{ secrets.PACKAGE_NAME }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📦 Installing Fastlane..."
+          gem install fastlane -NV 2>&1 | tail -2
+
+          AAB_PATH=$(find "$(pwd)/build/app/outputs/bundle/release" -name "*.aab" -type f | head -1)
+
+          if [ -z "$AAB_PATH" ]; then
+            echo "❌ AAB not found in build/app/outputs/bundle/release/"
+            find build -name "*.aab" -type f 2>/dev/null || echo "No AAB files found"
+            exit 1
+          fi
+          echo "✓ AAB found: $AAB_PATH"
+
+          if [ -z "$GCLOUD_SERVICE_ACCOUNT_CREDENTIALS" ]; then
+            echo "❌ GCLOUD_SERVICE_ACCOUNT_CREDENTIALS not set. Add it to the GitHub Actions repository secrets."
+            exit 1
+          fi
+          if [ -z "$PACKAGE_NAME" ]; then
+            echo "❌ PACKAGE_NAME not set. Add it to the GitHub Actions repository secrets."
+            exit 1
+          fi
+
+          mkdir -p ~/.android
+          echo "$GCLOUD_SERVICE_ACCOUNT_CREDENTIALS" > ~/.android/gcloud-key.json
+          echo "✓ Service account credentials loaded"
+
+          echo ""
+          echo "🚀 Deploying to Google Play ${{ inputs.play-track }} track..."
+          cd android
+
+          fastlane run supply \
+            aab:"$AAB_PATH" \
+            track:"${{ inputs.play-track }}" \
+            json_key:"$HOME/.android/gcloud-key.json" \
+            package_name:"$PACKAGE_NAME" \
+            skip_upload_apk:true \
+            skip_upload_metadata:true \
+            skip_upload_images:true \
+            skip_upload_screenshots:true \
+            release_status:"draft"
+
+          echo "✅ Google Play ${{ inputs.play-track }} deployment complete"
+
+  deploy_google_play_production:
+    name: deploy_google_play_production
+    needs: build_release_android
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/flutter:stable
+    if: |
+      github.event_name == 'push' && inputs.enable-play-store &&
+      github.ref == format('refs/heads/{0}', inputs.prod-branch) &&
+      needs.build_release_android.result == 'success'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+        with:
+          restore-cache: "false"
+
+      - name: download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: "${{ inputs.artifact-prefix }}-aab-${{ github.sha }}"
+          path: build/app/outputs/bundle/release/
+
+      - name: script
+        env:
+          GCLOUD_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GCLOUD_SERVICE_ACCOUNT_CREDENTIALS }}
+          PACKAGE_NAME: ${{ secrets.PACKAGE_NAME }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📦 Installing Fastlane..."
+          gem install fastlane -NV 2>&1 | tail -2
+
+          AAB_PATH=$(find "$(pwd)/build/app/outputs/bundle/release" -name "*.aab" -type f | head -1)
+
+          if [ -z "$AAB_PATH" ]; then
+            echo "❌ AAB not found in build/app/outputs/bundle/release/"
+            find build -name "*.aab" -type f 2>/dev/null || echo "No AAB files found"
+            exit 1
+          fi
+
+          if [ -z "$GCLOUD_SERVICE_ACCOUNT_CREDENTIALS" ]; then
+            echo "❌ GCLOUD_SERVICE_ACCOUNT_CREDENTIALS not set."
+            exit 1
+          fi
+          if [ -z "$PACKAGE_NAME" ]; then
+            echo "❌ PACKAGE_NAME not set."
+            exit 1
+          fi
+
+          mkdir -p ~/.android
+          echo "$GCLOUD_SERVICE_ACCOUNT_CREDENTIALS" > ~/.android/gcloud-key.json
+
+          PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //;s/"//g')
+
+          echo ""
+          echo "🚀 DEPLOYING TO GOOGLE PLAY PRODUCTION — version ${PKG_VER}"
+          echo ""
+
+          cd android
+
+          fastlane run supply \
+            aab:"$AAB_PATH" \
+            track:"release" \
+            json_key:"$HOME/.android/gcloud-key.json" \
+            package_name:"$PACKAGE_NAME" \
+            skip_upload_apk:true \
+            skip_upload_metadata:true \
+            skip_upload_images:true \
+            skip_upload_screenshots:true \
+            release_status:"completed"
+
+          echo "✅ Google Play production deployment complete! Version ${PKG_VER} is live."

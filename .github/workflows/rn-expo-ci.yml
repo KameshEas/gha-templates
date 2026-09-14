@@ -1,0 +1,56 @@
+name: RN/Expo CI (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "20"
+      run-lint:
+        type: boolean
+        default: true
+      run-typecheck:
+        description: Runs `npx tsc --noEmit` if a tsconfig.json is present
+        type: boolean
+        default: true
+      run-test:
+        description: Runs `npm test` if a test script is defined in package.json
+        type: boolean
+        default: true
+
+jobs:
+  ci:
+    name: Lint, Typecheck & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        if: inputs.run-lint
+        run: npm run lint --if-present
+
+      - name: Typecheck
+        if: inputs.run-typecheck
+        run: |
+          if [ -f tsconfig.json ]; then
+            npx tsc --noEmit
+          else
+            echo "No tsconfig.json found, skipping typecheck"
+          fi
+
+      - name: Test
+        if: inputs.run-test
+        run: |
+          if node -e "process.exit(require('./package.json').scripts && require('./package.json').scripts.test ? 0 : 1)"; then
+            npm test
+          else
+            echo "No test script defined, skipping"
+          fi
