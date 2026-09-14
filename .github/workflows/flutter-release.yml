@@ -55,13 +55,28 @@ on:
         description: Repo Variable name holding the integer build number (only used when enable-auto-versioning)
         type: string
         default: ANDROID_BUILD_NUMBER
+      enable-sops-secrets:
+        description: >
+          Source ANDROID_*/SHOREBIRD_TOKEN/FIREBASE_*/GCLOUD_*/PACKAGE_NAME from a
+          SOPS-encrypted dotenv file in sops-secrets-repo instead of this repo's own
+          GitHub Secrets. Requires secrets.SOPS_AGE_KEY. See gha-templates README.
+        type: boolean
+        default: false
+      sops-secrets-repo:
+        description: owner/repo holding the encrypted per-app dotenv files
+        type: string
+        default: KameshEas/ci-secrets
+      sops-secrets-file:
+        description: File name within sops-secrets-repo for this app, e.g. cashlyze.env
+        type: string
+        default: ""
     secrets:
       ANDROID_KEYSTORE_BASE64:
-        required: true
+        required: false
       ANDROID_KEY_ALIAS:
-        required: true
+        required: false
       ANDROID_STORE_PASSWORD:
-        required: true
+        required: false
       ANDROID_KEY_PASSWORD:
         required: false
       SHOREBIRD_TOKEN:
@@ -78,6 +93,9 @@ on:
         required: false
       VARS_PAT:
         description: Fine-grained PAT with "Variables Read and write" on this repo, required when enable-auto-versioning is true
+        required: false
+      SOPS_AGE_KEY:
+        description: age private key (AGE-SECRET-KEY-...) that decrypts sops-secrets-file, required when enable-sops-secrets is true
         required: false
 
 concurrency:
@@ -187,6 +205,14 @@ jobs:
        (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
     steps:
       - uses: actions/checkout@v4
+
+      - if: inputs.enable-sops-secrets
+        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
+        with:
+          secrets-repo: ${{ inputs.sops-secrets-repo }}
+          secrets-file: ${{ inputs.sops-secrets-file }}
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
+
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           ensure-env-file: ${{ inputs.ensure-env-file }}
@@ -194,10 +220,10 @@ jobs:
       - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
         with:
           keystore-filename: ${{ inputs.keystore-filename }}
-          keystore-base64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          key-alias: ${{ secrets.ANDROID_KEY_ALIAS }}
-          store-password: ${{ secrets.ANDROID_STORE_PASSWORD }}
-          key-password: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          keystore-base64: ${{ inputs.enable-sops-secrets && env.ANDROID_KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64 }}
+          key-alias: ${{ inputs.enable-sops-secrets && env.ANDROID_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          store-password: ${{ inputs.enable-sops-secrets && env.ANDROID_STORE_PASSWORD || secrets.ANDROID_STORE_PASSWORD }}
+          key-password: ${{ inputs.enable-sops-secrets && env.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
 
       - name: Fast single-ABI release build (smoke test)
         shell: bash
@@ -232,6 +258,14 @@ jobs:
        (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
     steps:
       - uses: actions/checkout@v4
+
+      - if: inputs.enable-sops-secrets
+        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
+        with:
+          secrets-repo: ${{ inputs.sops-secrets-repo }}
+          secrets-file: ${{ inputs.sops-secrets-file }}
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
+
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           ensure-env-file: ${{ inputs.ensure-env-file }}
@@ -246,14 +280,14 @@ jobs:
       - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
         with:
           keystore-filename: ${{ inputs.keystore-filename }}
-          keystore-base64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          key-alias: ${{ secrets.ANDROID_KEY_ALIAS }}
-          store-password: ${{ secrets.ANDROID_STORE_PASSWORD }}
-          key-password: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          keystore-base64: ${{ inputs.enable-sops-secrets && env.ANDROID_KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64 }}
+          key-alias: ${{ inputs.enable-sops-secrets && env.ANDROID_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          store-password: ${{ inputs.enable-sops-secrets && env.ANDROID_STORE_PASSWORD || secrets.ANDROID_STORE_PASSWORD }}
+          key-password: ${{ inputs.enable-sops-secrets && env.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
 
       - name: Build AAB
         env:
-          SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+          SHOREBIRD_TOKEN: ${{ inputs.enable-sops-secrets && env.SHOREBIRD_TOKEN || secrets.SHOREBIRD_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -316,6 +350,14 @@ jobs:
        (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
     steps:
       - uses: actions/checkout@v4
+
+      - if: inputs.enable-sops-secrets
+        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
+        with:
+          secrets-repo: ${{ inputs.sops-secrets-repo }}
+          secrets-file: ${{ inputs.sops-secrets-file }}
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
+
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           ensure-env-file: ${{ inputs.ensure-env-file }}
@@ -323,10 +365,10 @@ jobs:
       - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
         with:
           keystore-filename: ${{ inputs.keystore-filename }}
-          keystore-base64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          key-alias: ${{ secrets.ANDROID_KEY_ALIAS }}
-          store-password: ${{ secrets.ANDROID_STORE_PASSWORD }}
-          key-password: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          keystore-base64: ${{ inputs.enable-sops-secrets && env.ANDROID_KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64 }}
+          key-alias: ${{ inputs.enable-sops-secrets && env.ANDROID_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          store-password: ${{ inputs.enable-sops-secrets && env.ANDROID_STORE_PASSWORD || secrets.ANDROID_STORE_PASSWORD }}
+          key-password: ${{ inputs.enable-sops-secrets && env.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
 
       - name: Build APK
         shell: bash
@@ -379,6 +421,14 @@ jobs:
       needs.detect_version_change.outputs.version_changed == 'false'
     steps:
       - uses: actions/checkout@v4
+
+      - if: inputs.enable-sops-secrets
+        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
+        with:
+          secrets-repo: ${{ inputs.sops-secrets-repo }}
+          secrets-file: ${{ inputs.sops-secrets-file }}
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
+
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           ensure-env-file: ${{ inputs.ensure-env-file }}
@@ -391,7 +441,7 @@ jobs:
 
       - name: Publish patch
         env:
-          SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+          SHOREBIRD_TOKEN: ${{ inputs.enable-sops-secrets && env.SHOREBIRD_TOKEN || secrets.SHOREBIRD_TOKEN }}
           GH_TOKEN: ${{ secrets.VARS_PAT }}
         shell: bash
         run: |
@@ -431,6 +481,14 @@ jobs:
     environment: development
     steps:
       - uses: actions/checkout@v4
+
+      - if: inputs.enable-sops-secrets
+        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
+        with:
+          secrets-repo: ${{ inputs.sops-secrets-repo }}
+          secrets-file: ${{ inputs.sops-secrets-file }}
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
+
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           restore-cache: "false"
@@ -448,9 +506,9 @@ jobs:
 
       - name: script
         env:
-          FIREBASE_ANDROID_APP_ID: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
-          FIREBASE_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_CREDENTIALS }}
-          FIREBASE_DISTRIBUTION_GROUPS: ${{ secrets.FIREBASE_DISTRIBUTION_GROUPS }}
+          FIREBASE_ANDROID_APP_ID: ${{ inputs.enable-sops-secrets && env.FIREBASE_ANDROID_APP_ID || secrets.FIREBASE_ANDROID_APP_ID }}
+          FIREBASE_SERVICE_ACCOUNT_CREDENTIALS: ${{ inputs.enable-sops-secrets && env.FIREBASE_SERVICE_ACCOUNT_CREDENTIALS || secrets.FIREBASE_SERVICE_ACCOUNT_CREDENTIALS }}
+          FIREBASE_DISTRIBUTION_GROUPS: ${{ inputs.enable-sops-secrets && env.FIREBASE_DISTRIBUTION_GROUPS || secrets.FIREBASE_DISTRIBUTION_GROUPS }}
         shell: bash
         run: |
           set -euo pipefail
@@ -502,6 +560,13 @@ jobs:
     environment: development
     steps:
       - uses: actions/checkout@v4
+
+      - if: inputs.enable-sops-secrets
+        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
+        with:
+          secrets-repo: ${{ inputs.sops-secrets-repo }}
+          secrets-file: ${{ inputs.sops-secrets-file }}
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           restore-cache: "false"
@@ -514,8 +579,8 @@ jobs:
 
       - name: script
         env:
-          GCLOUD_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GCLOUD_SERVICE_ACCOUNT_CREDENTIALS }}
-          PACKAGE_NAME: ${{ secrets.PACKAGE_NAME }}
+          GCLOUD_SERVICE_ACCOUNT_CREDENTIALS: ${{ inputs.enable-sops-secrets && env.GCLOUD_SERVICE_ACCOUNT_CREDENTIALS || secrets.GCLOUD_SERVICE_ACCOUNT_CREDENTIALS }}
+          PACKAGE_NAME: ${{ inputs.enable-sops-secrets && env.PACKAGE_NAME || secrets.PACKAGE_NAME }}
         shell: bash
         run: |
           set -euo pipefail
@@ -575,6 +640,14 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
+
+      - if: inputs.enable-sops-secrets
+        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
+        with:
+          secrets-repo: ${{ inputs.sops-secrets-repo }}
+          secrets-file: ${{ inputs.sops-secrets-file }}
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
+
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           restore-cache: "false"
@@ -587,8 +660,8 @@ jobs:
 
       - name: script
         env:
-          GCLOUD_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GCLOUD_SERVICE_ACCOUNT_CREDENTIALS }}
-          PACKAGE_NAME: ${{ secrets.PACKAGE_NAME }}
+          GCLOUD_SERVICE_ACCOUNT_CREDENTIALS: ${{ inputs.enable-sops-secrets && env.GCLOUD_SERVICE_ACCOUNT_CREDENTIALS || secrets.GCLOUD_SERVICE_ACCOUNT_CREDENTIALS }}
+          PACKAGE_NAME: ${{ inputs.enable-sops-secrets && env.PACKAGE_NAME || secrets.PACKAGE_NAME }}
         shell: bash
         run: |
           set -euo pipefail
