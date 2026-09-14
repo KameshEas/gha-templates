@@ -368,6 +368,23 @@ jobs:
           echo "$FIREBASE_SERVICE_ACCOUNT_CREDENTIALS" > "$HOME/.firebase/service-account.json"
           export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.firebase/service-account.json"
 
+          echo "🔎 Validating service account JSON (length ${#FIREBASE_SERVICE_ACCOUNT_CREDENTIALS} chars)..."
+          if ! node -e "
+            const fs = require('fs');
+            const raw = fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf8');
+            const json = JSON.parse(raw);
+            for (const field of ['type', 'project_id', 'private_key', 'client_email']) {
+              if (!json[field]) { console.error('Missing field: ' + field); process.exit(1); }
+            }
+            console.log('OK - type=' + json.type + ' project_id=' + json.project_id);
+          "; then
+            echo "❌ FIREBASE_SERVICE_ACCOUNT_CREDENTIALS is not valid, complete service-account JSON."
+            echo "   Most likely cause: the value wasn't minified to a single line before being"
+            echo "   put into the (SOPS-encrypted) dotenv file, so only a fragment got stored."
+            echo "   Re-minify with: node -e \"console.log(JSON.stringify(require('./file.json')))\""
+            exit 1
+          fi
+
           RELEASE_NOTES="PR #${PR_NUMBER} - $(date '+%Y-%m-%d %H:%M:%S')"
 
           echo "🔥 Deploying PR #${PR_NUMBER} to Firebase for review..."
@@ -542,6 +559,19 @@ jobs:
 
           mkdir -p ~/.android
           echo "$GCLOUD_SERVICE_ACCOUNT_CREDENTIALS" > ~/.android/gcloud-key.json
+
+          # Cheap heuristic (no JSON parser guaranteed available here): a real
+          # service-account file starts/ends with braces and has these fields.
+          # Catches the "value wasn't minified to one line before being stored
+          # in the encrypted dotenv" mistake before fastlane fails on it.
+          if ! grep -q '"private_key"' ~/.android/gcloud-key.json || \
+             ! grep -q '"client_email"' ~/.android/gcloud-key.json || \
+             [ "$(head -c1 ~/.android/gcloud-key.json)" != "{" ]; then
+            echo "❌ GCLOUD_SERVICE_ACCOUNT_CREDENTIALS doesn't look like a complete service-account JSON (length ${#GCLOUD_SERVICE_ACCOUNT_CREDENTIALS} chars)."
+            echo "   Most likely cause: the value wasn't minified to a single line before being"
+            echo "   put into the (SOPS-encrypted) dotenv file, so only a fragment got stored."
+            exit 1
+          fi
           echo "✓ Service account credentials loaded"
 
           echo ""
@@ -624,6 +654,15 @@ jobs:
 
           mkdir -p ~/.android
           echo "$GCLOUD_SERVICE_ACCOUNT_CREDENTIALS" > ~/.android/gcloud-key.json
+
+          if ! grep -q '"private_key"' ~/.android/gcloud-key.json || \
+             ! grep -q '"client_email"' ~/.android/gcloud-key.json || \
+             [ "$(head -c1 ~/.android/gcloud-key.json)" != "{" ]; then
+            echo "❌ GCLOUD_SERVICE_ACCOUNT_CREDENTIALS doesn't look like a complete service-account JSON (length ${#GCLOUD_SERVICE_ACCOUNT_CREDENTIALS} chars)."
+            echo "   Most likely cause: the value wasn't minified to a single line before being"
+            echo "   put into the (SOPS-encrypted) dotenv file, so only a fragment got stored."
+            exit 1
+          fi
 
           echo ""
           echo "🚀 DEPLOYING TO GOOGLE PLAY PRODUCTION"
