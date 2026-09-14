@@ -51,7 +51,8 @@ runs:
           code=$(echo "$body" | tail -n1)
           body=$(echo "$body" | sed '$d')
           if [ "$code" = "200" ]; then
-            echo "$body" | grep -o '"value":"[^"]*"' | head -1 | sed 's/"value":"//; s/"$//'
+            echo "$body" | grep -o '"value"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+              | sed 's/^"value"[[:space:]]*:[[:space:]]*"//; s/"$//' || true
           else
             echo ""
           fi
