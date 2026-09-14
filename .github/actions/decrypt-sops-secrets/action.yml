@@ -14,7 +14,7 @@ inputs:
   ref:
     description: Branch/tag/sha of the secrets repo to check out
     required: false
-    default: main
+    default: master
   age-key:
     description: The AGE-SECRET-KEY-... value (pass secrets.SOPS_AGE_KEY)
     required: true
