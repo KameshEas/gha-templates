@@ -1,5 +1,16 @@
 name: Flutter Release (reusable)
 
+# Flow:
+#   pull_request -> Firebase App Distribution only (any version is fine, this is
+#     a disposable testing build for the reviewer, not a shipped artifact).
+#   push (i.e. the PR merged) -> the real release: version increments exactly
+#     once here, then Play Store (internal on dev-branch, production on
+#     prod-branch).
+# Shorebird OTA patching is NOT part of this workflow -- it's a separate,
+# manually-triggered action (flutter-shorebird-patch.yml) because deciding
+# whether a change is Dart-only-safe to patch is a human judgment call, not
+# something safe to infer from git state.
+
 on:
   workflow_call:
     inputs:
@@ -8,14 +19,15 @@ on:
         type: string
         required: true
       dev-branch:
-        description: Branch that triggers a dev/internal deploy
+        description: Branch whose merges trigger a Play Store internal-track release
         type: string
         default: development
       prod-branch:
-        description: Branch that triggers a production deploy
+        description: Branch whose merges trigger a Play Store production-track release
         type: string
         default: prod
       enable-shorebird:
+        description: Register each Play Store release with Shorebird (shorebird release android) so it becomes OTA-patchable later
         type: boolean
         default: false
       enable-firebase-distribution:
@@ -43,8 +55,8 @@ on:
       enable-auto-versioning:
         description: >
           Resolve version + build number from repo Variables instead of pubspec.yaml,
-          auto-incrementing them each release (patch rolls into minor after 10, minor
-          into major after 9). Requires secrets.VARS_PAT.
+          auto-incrementing them on every merge (patch rolls into minor after 10,
+          minor into major after 9). Requires secrets.VARS_PAT.
         type: boolean
         default: false
       version-variable:
@@ -113,41 +125,13 @@ permissions:
   contents: read
 
 jobs:
-  detect_version_change:
-    name: detect_version_change
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    if: github.event_name == 'push'
-    outputs:
-      version_changed: ${{ steps.check.outputs.changed }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-
-      - id: check
-        shell: bash
-        run: |
-          set -e
-          CURRENT=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
-          if git rev-parse HEAD^ >/dev/null 2>&1; then
-            PREVIOUS=$(git show HEAD^:pubspec.yaml | grep '^version:' | head -n1 | sed 's/version: //; s/"//g')
-          else
-            PREVIOUS=""
-          fi
-          echo "Current version: $CURRENT / Previous version: $PREVIOUS"
-          if [ "$CURRENT" != "$PREVIOUS" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
   # Resolves and persists the next version/build-number pair from repo Variables.
-  # Runs once per workflow run (not once per build job) so the AAB and APK below
-  # share one version instead of each incrementing it separately.
+  # Only runs on push (i.e. a merge) -- this is the one and only point where the
+  # version advances. PR-time Firebase builds intentionally reuse whatever's
+  # already in pubspec.yaml; Firebase doesn't care what version label a testing
+  # build carries.
   resolve_version:
     name: resolve_version
-    needs: detect_version_change
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -156,7 +140,7 @@ jobs:
     if: |
       inputs.enable-auto-versioning && github.event_name == 'push' &&
       (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
-       (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
+       github.ref == format('refs/heads/{0}', inputs.prod-branch))
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       build_number: ${{ steps.resolve.outputs.build-number }}
@@ -191,25 +175,23 @@ jobs:
         shell: bash
         run: flutter test
 
-  # Cheap, single-ABI, minified release build — exercises the exact signing +
-  # R8/minify pass that the full multi-arch build below does, but on one
-  # architecture and as a plain APK (no AAB bundling, no Shorebird). Catches
-  # keystore/signing/ProGuard misconfiguration in ~3-4 min instead of the
-  # 7-10 min a full multi-arch release build takes to fail on the same error.
+  # Cheap, single-ABI, minified release build -- exercises the exact signing +
+  # R8/minify pass that build_firebase_apk below does, but on one architecture
+  # instead of all of them. Catches keystore/signing/ProGuard misconfiguration
+  # in ~3-4 min instead of waiting for the full multi-arch Firebase APK build
+  # to fail on the same error. PR-time only, same as the Firebase build it guards.
   smoke_test_release_build:
     name: smoke_test_release_build
-    needs: [detect_version_change, resolve_version, test_code_quality]
+    needs: test_code_quality
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
     timeout-minutes: 20
     if: |
       always() &&
-      (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
       (needs.test_code_quality.result == 'success' || needs.test_code_quality.result == 'skipped') &&
-      github.event_name == 'push' && (inputs.enable-shorebird || inputs.enable-firebase-distribution || inputs.enable-play-store) &&
-      (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
-       (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
+      github.event_name == 'pull_request' &&
+      (inputs.enable-shorebird || inputs.enable-firebase-distribution || inputs.enable-play-store)
     steps:
       - uses: actions/checkout@v4
 
@@ -244,16 +226,171 @@ jobs:
             exit 1
           fi
 
-          echo "🔥 Smoke-testing signing + R8/minify on a single ABI before the full release build..."
+          echo "🔥 Smoke-testing signing + R8/minify on a single ABI before the full Firebase build..."
           flutter build apk --release --target-platform=android-arm64
-          echo "✅ Smoke build passed — proceeding to the full release build(s)."
+          echo "✅ Smoke build passed — proceeding to the full build."
 
-  # Builds the release AAB. Uses Shorebird when enabled (registers an OTA-patchable
-  # release); otherwise a plain `flutter build appbundle`. Runs whenever the AAB is
-  # needed downstream (Shorebird release itself, or a Play Store deploy).
+  # PR-time only: a disposable testing APK for reviewers. Whatever version is
+  # currently in pubspec.yaml is fine -- Firebase doesn't enforce uniqueness,
+  # and this build is never the one that ships.
+  build_firebase_apk:
+    name: build_firebase_apk
+    needs: [test_code_quality, smoke_test_release_build]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/flutter:stable
+    timeout-minutes: 25
+    if: |
+      always() &&
+      (needs.test_code_quality.result == 'success' || needs.test_code_quality.result == 'skipped') &&
+      (needs.smoke_test_release_build.result == 'success' || needs.smoke_test_release_build.result == 'skipped') &&
+      github.event_name == 'pull_request' && inputs.enable-firebase-distribution
+    steps:
+      - uses: actions/checkout@v4
+
+      - if: inputs.enable-sops-secrets
+        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
+        with:
+          secrets-repo: ${{ inputs.sops-secrets-repo }}
+          secrets-file: ${{ inputs.sops-secrets-file }}
+          ref: ${{ inputs.sops-secrets-ref }}
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
+          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
+
+      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+        with:
+          ensure-env-file: ${{ inputs.ensure-env-file }}
+
+      - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
+        with:
+          keystore-filename: ${{ inputs.keystore-filename }}
+          keystore-base64: ${{ inputs.enable-sops-secrets && env.ANDROID_KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64 }}
+          key-alias: ${{ inputs.enable-sops-secrets && env.ANDROID_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          store-password: ${{ inputs.enable-sops-secrets && env.ANDROID_STORE_PASSWORD || secrets.ANDROID_STORE_PASSWORD }}
+          key-password: ${{ inputs.enable-sops-secrets && env.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ANDROID_KEYSTORE_PATH:-}" ] || [ ! -f "$ANDROID_KEYSTORE_PATH" ]; then
+            echo "❌ Keystore was not decoded (ANDROID_KEYSTORE_BASE64 secret missing or invalid)."
+            exit 1
+          fi
+
+          PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
+          BUILD_NAME=$(echo "$PKG_VER" | cut -d+ -f1)
+          BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
+
+          echo "📱 Building Firebase testing APK (version ${BUILD_NAME}+${BUILD_NUMBER}, not a shipped version)..."
+          flutter build apk \
+            --release \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER"
+
+          echo ""
+          echo "📦 Verifying APK..."
+          ls -lh build/app/outputs/flutter-apk/
+          test -f build/app/outputs/flutter-apk/app-release.apk
+          echo "✅ APK build completed."
+
+      - name: artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ inputs.artifact-prefix }}-apk-${{ github.sha }}"
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 3
+
+  deploy_firebase_distribution:
+    name: deploy_firebase_distribution
+    needs: build_firebase_apk
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/flutter:stable
+    timeout-minutes: 20
+    if: github.event_name == 'pull_request' && inputs.enable-firebase-distribution
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+
+      - if: inputs.enable-sops-secrets
+        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
+        with:
+          secrets-repo: ${{ inputs.sops-secrets-repo }}
+          secrets-file: ${{ inputs.sops-secrets-file }}
+          ref: ${{ inputs.sops-secrets-ref }}
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
+          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
+
+      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+        with:
+          restore-cache: "false"
+
+      - name: download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: "${{ inputs.artifact-prefix }}-apk-${{ github.sha }}"
+          path: build/app/outputs/flutter-apk/
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: script
+        env:
+          FIREBASE_ANDROID_APP_ID: ${{ inputs.enable-sops-secrets && env.FIREBASE_ANDROID_APP_ID || secrets.FIREBASE_ANDROID_APP_ID }}
+          FIREBASE_SERVICE_ACCOUNT_CREDENTIALS: ${{ inputs.enable-sops-secrets && env.FIREBASE_SERVICE_ACCOUNT_CREDENTIALS || secrets.FIREBASE_SERVICE_ACCOUNT_CREDENTIALS }}
+          FIREBASE_DISTRIBUTION_GROUPS: ${{ inputs.enable-sops-secrets && env.FIREBASE_DISTRIBUTION_GROUPS || secrets.FIREBASE_DISTRIBUTION_GROUPS }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📦 Installing Firebase CLI..."
+          npm install -g firebase-tools
+
+          APK_PATH=$(find build/app/outputs/flutter-apk -name "*.apk" -type f | head -1)
+
+          if [ -z "$APK_PATH" ]; then
+            echo "⚠️  APK not found in build/app/outputs/flutter-apk/"
+            find build -name "*.apk" -type f 2>/dev/null || echo "No APK files found"
+            echo "Skipping Firebase distribution (APK optional for internal testing)"
+            exit 0
+          fi
+
+          if [ -z "$FIREBASE_ANDROID_APP_ID" ] || [ -z "$FIREBASE_SERVICE_ACCOUNT_CREDENTIALS" ]; then
+            echo "⚠️  Firebase variables not set, skipping Firebase distribution"
+            exit 0
+          fi
+
+          mkdir -p "$HOME/.firebase"
+          echo "$FIREBASE_SERVICE_ACCOUNT_CREDENTIALS" > "$HOME/.firebase/service-account.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.firebase/service-account.json"
+
+          RELEASE_NOTES="PR #${PR_NUMBER} - $(date '+%Y-%m-%d %H:%M:%S')"
+
+          echo "🔥 Deploying PR #${PR_NUMBER} to Firebase for review..."
+
+          DISTRIBUTE_ARGS=(appdistribution:distribute "$APK_PATH" \
+            --app "$FIREBASE_ANDROID_APP_ID" \
+            --release-notes "$RELEASE_NOTES")
+
+          if [ -n "$FIREBASE_DISTRIBUTION_GROUPS" ]; then
+            DISTRIBUTE_ARGS+=(--groups "$FIREBASE_DISTRIBUTION_GROUPS")
+          fi
+
+          env -u SHELLOPTS firebase "${DISTRIBUTE_ARGS[@]}"
+          echo "✅ Firebase deployment complete"
+
+  # Builds the release AAB. Uses Shorebird when enabled (registers an
+  # OTA-patchable release); otherwise a plain `flutter build appbundle`.
+  # Push-only (i.e. the PR already merged) -- this is where the version
+  # actually advances via resolve_version, and where Play Store deployment
+  # is sourced from.
   build_release_android:
     name: build_release_android
-    needs: [detect_version_change, resolve_version, smoke_test_release_build]
+    needs: resolve_version
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
@@ -261,10 +398,9 @@ jobs:
     if: |
       always() &&
       (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
-      (needs.smoke_test_release_build.result == 'success' || needs.smoke_test_release_build.result == 'skipped') &&
       github.event_name == 'push' && (inputs.enable-shorebird || inputs.enable-play-store) &&
       (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
-       (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
+       github.ref == format('refs/heads/{0}', inputs.prod-branch))
     steps:
       - uses: actions/checkout@v4
 
@@ -345,228 +481,6 @@ jobs:
           path: build/app/outputs/bundle/release/app-release.aab
           retention-days: 3
 
-  build_firebase_apk:
-    name: build_firebase_apk
-    needs: [detect_version_change, resolve_version, smoke_test_release_build]
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/cirruslabs/flutter:stable
-    timeout-minutes: 25
-    if: |
-      always() &&
-      (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
-      (needs.smoke_test_release_build.result == 'success' || needs.smoke_test_release_build.result == 'skipped') &&
-      github.event_name == 'push' && inputs.enable-firebase-distribution &&
-      (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
-       (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
-    steps:
-      - uses: actions/checkout@v4
-
-      - if: inputs.enable-sops-secrets
-        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
-        with:
-          secrets-repo: ${{ inputs.sops-secrets-repo }}
-          secrets-file: ${{ inputs.sops-secrets-file }}
-          ref: ${{ inputs.sops-secrets-ref }}
-          age-key: ${{ secrets.SOPS_AGE_KEY }}
-          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
-
-      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
-        with:
-          ensure-env-file: ${{ inputs.ensure-env-file }}
-
-      - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
-        with:
-          keystore-filename: ${{ inputs.keystore-filename }}
-          keystore-base64: ${{ inputs.enable-sops-secrets && env.ANDROID_KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64 }}
-          key-alias: ${{ inputs.enable-sops-secrets && env.ANDROID_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
-          store-password: ${{ inputs.enable-sops-secrets && env.ANDROID_STORE_PASSWORD || secrets.ANDROID_STORE_PASSWORD }}
-          key-password: ${{ inputs.enable-sops-secrets && env.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
-
-      - name: Build APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -z "${ANDROID_KEYSTORE_PATH:-}" ] || [ ! -f "$ANDROID_KEYSTORE_PATH" ]; then
-            echo "❌ Keystore was not decoded (ANDROID_KEYSTORE_BASE64 secret missing or invalid)."
-            exit 1
-          fi
-
-          if [ "${{ inputs.enable-auto-versioning }}" = "true" ]; then
-            BUILD_NAME="${{ needs.resolve_version.outputs.version }}"
-            BUILD_NUMBER="${{ needs.resolve_version.outputs.build_number }}"
-          else
-            PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
-            BUILD_NAME=$(echo "$PKG_VER" | cut -d+ -f1)
-            BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
-          fi
-
-          echo "📱 Building Firebase APK..."
-          flutter build apk \
-            --release \
-            --build-name="$BUILD_NAME" \
-            --build-number="$BUILD_NUMBER"
-
-          echo ""
-          echo "📦 Verifying APK..."
-          ls -lh build/app/outputs/flutter-apk/
-          test -f build/app/outputs/flutter-apk/app-release.apk
-          echo "✅ APK build completed."
-
-      - name: artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: "${{ inputs.artifact-prefix }}-apk-${{ github.sha }}"
-          path: build/app/outputs/flutter-apk/app-release.apk
-          retention-days: 3
-
-  build_patch_shorebird:
-    name: build_patch_shorebird
-    needs: detect_version_change
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/cirruslabs/flutter:stable
-    timeout-minutes: 25
-    if: |
-      github.event_name == 'push' && inputs.enable-shorebird &&
-      github.ref == format('refs/heads/{0}', inputs.prod-branch) &&
-      needs.detect_version_change.outputs.version_changed == 'false'
-    steps:
-      - uses: actions/checkout@v4
-
-      - if: inputs.enable-sops-secrets
-        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
-        with:
-          secrets-repo: ${{ inputs.sops-secrets-repo }}
-          secrets-file: ${{ inputs.sops-secrets-file }}
-          ref: ${{ inputs.sops-secrets-ref }}
-          age-key: ${{ secrets.SOPS_AGE_KEY }}
-          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
-
-      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
-        with:
-          ensure-env-file: ${{ inputs.ensure-env-file }}
-
-      - name: Install Shorebird
-        shell: bash
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/shorebirdtech/install/main/install.sh | bash
-          echo "$HOME/.shorebird/bin" >> $GITHUB_PATH
-
-      - name: Publish patch
-        env:
-          SHOREBIRD_TOKEN: ${{ inputs.enable-sops-secrets && env.SHOREBIRD_TOKEN || secrets.SHOREBIRD_TOKEN }}
-          GH_TOKEN: ${{ secrets.VARS_PAT }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          flutter pub get
-
-          # A patch targets the version already released in a *previous* run (this
-          # job only runs when detect_version_change found no bump this push), so
-          # it must read the current value, never advance it.
-          if [ "${{ inputs.enable-auto-versioning }}" = "true" ]; then
-            RELEASE_VERSION=$(curl -sS \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/variables/${{ inputs.version-variable }}" \
-              | grep -o '"value"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
-              | sed 's/^"value"[[:space:]]*:[[:space:]]*"//; s/"$//')
-          else
-            RELEASE_VERSION=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //;s/"//g' | cut -d+ -f1)
-          fi
-          echo "🐦 Creating OTA Patch for $RELEASE_VERSION"
-
-          shorebird patch \
-            --platforms=android \
-            --release-version="$RELEASE_VERSION" \
-            --no-confirm
-
-          echo "✅ OTA Patch Published"
-
-  deploy_firebase_distribution:
-    name: deploy_firebase_distribution
-    needs: build_firebase_apk
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/cirruslabs/flutter:stable
-    timeout-minutes: 20
-    if: github.event_name == 'push' && inputs.enable-firebase-distribution && github.ref == format('refs/heads/{0}', inputs.dev-branch)
-    environment: development
-    steps:
-      - uses: actions/checkout@v4
-
-      - if: inputs.enable-sops-secrets
-        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
-        with:
-          secrets-repo: ${{ inputs.sops-secrets-repo }}
-          secrets-file: ${{ inputs.sops-secrets-file }}
-          ref: ${{ inputs.sops-secrets-ref }}
-          age-key: ${{ secrets.SOPS_AGE_KEY }}
-          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
-
-      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
-        with:
-          restore-cache: "false"
-
-      - name: download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: "${{ inputs.artifact-prefix }}-apk-${{ github.sha }}"
-          path: build/app/outputs/flutter-apk/
-
-      - name: setup node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: script
-        env:
-          FIREBASE_ANDROID_APP_ID: ${{ inputs.enable-sops-secrets && env.FIREBASE_ANDROID_APP_ID || secrets.FIREBASE_ANDROID_APP_ID }}
-          FIREBASE_SERVICE_ACCOUNT_CREDENTIALS: ${{ inputs.enable-sops-secrets && env.FIREBASE_SERVICE_ACCOUNT_CREDENTIALS || secrets.FIREBASE_SERVICE_ACCOUNT_CREDENTIALS }}
-          FIREBASE_DISTRIBUTION_GROUPS: ${{ inputs.enable-sops-secrets && env.FIREBASE_DISTRIBUTION_GROUPS || secrets.FIREBASE_DISTRIBUTION_GROUPS }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "📦 Installing Firebase CLI..."
-          npm install -g firebase-tools
-
-          APK_PATH=$(find build/app/outputs/flutter-apk -name "*.apk" -type f | head -1)
-
-          if [ -z "$APK_PATH" ]; then
-            echo "⚠️  APK not found in build/app/outputs/flutter-apk/"
-            find build -name "*.apk" -type f 2>/dev/null || echo "No APK files found"
-            echo "Skipping Firebase distribution (APK optional for internal testing)"
-            exit 0
-          fi
-
-          if [ -z "$FIREBASE_ANDROID_APP_ID" ] || [ -z "$FIREBASE_SERVICE_ACCOUNT_CREDENTIALS" ]; then
-            echo "⚠️  Firebase variables not set, skipping Firebase distribution"
-            exit 0
-          fi
-
-          mkdir -p "$HOME/.firebase"
-          echo "$FIREBASE_SERVICE_ACCOUNT_CREDENTIALS" > "$HOME/.firebase/service-account.json"
-          export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.firebase/service-account.json"
-
-          PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //;s/"//g')
-          RELEASE_NOTES="Build ${PKG_VER} - $(date '+%Y-%m-%d %H:%M:%S')"
-
-          echo "🔥 Deploying to Firebase..."
-
-          DISTRIBUTE_ARGS=(appdistribution:distribute "$APK_PATH" \
-            --app "$FIREBASE_ANDROID_APP_ID" \
-            --release-notes "$RELEASE_NOTES")
-
-          if [ -n "$FIREBASE_DISTRIBUTION_GROUPS" ]; then
-            DISTRIBUTE_ARGS+=(--groups "$FIREBASE_DISTRIBUTION_GROUPS")
-          fi
-
-          env -u SHELLOPTS firebase "${DISTRIBUTE_ARGS[@]}"
-          echo "✅ Firebase deployment complete"
-
   deploy_google_play_internal:
     name: deploy_google_play_internal
     needs: build_release_android
@@ -587,6 +501,7 @@ jobs:
           ref: ${{ inputs.sops-secrets-ref }}
           age-key: ${{ secrets.SOPS_AGE_KEY }}
           repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
+
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           restore-cache: "false"
@@ -710,10 +625,8 @@ jobs:
           mkdir -p ~/.android
           echo "$GCLOUD_SERVICE_ACCOUNT_CREDENTIALS" > ~/.android/gcloud-key.json
 
-          PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //;s/"//g')
-
           echo ""
-          echo "🚀 DEPLOYING TO GOOGLE PLAY PRODUCTION — version ${PKG_VER}"
+          echo "🚀 DEPLOYING TO GOOGLE PLAY PRODUCTION"
           echo ""
 
           cd android
@@ -729,4 +642,4 @@ jobs:
             skip_upload_screenshots:true \
             release_status:"completed"
 
-          echo "✅ Google Play production deployment complete! Version ${PKG_VER} is live."
+          echo "✅ Google Play production deployment complete!"

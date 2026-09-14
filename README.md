@@ -27,11 +27,16 @@ jobs:
 ```
 
 ### `flutter-release.yml`
-Version-gated Android build → optional Shorebird OTA release/patch → optional Firebase App Distribution → optional Google Play Console deploy (internal on `dev-branch`, production on `prod-branch`). Each release channel is off by default — an app only pays for (and only needs secrets for) the channels it enables.
+Two separate moments, two separate purposes:
 
-**Fail-fast job order:** cheapest checks run first so a doomed release fails sooner, not after a full multi-arch build. `test_code_quality` (analyze/test) gates `smoke_test_release_build` (a single-ABI, minified `flutter build apk`, exercises the exact signing + R8/ProGuard pass the full build uses) which gates the expensive multi-arch `build_release_android`/`build_firebase_apk` jobs. Every job also has a `timeout-minutes` ceiling (10-35 min depending on the job) — this is a safety net against a genuine hang, not a duration SLA, so it's sized generously against slow/cold runners rather than tightly against expected run time.
+- **`pull_request`** (opened/updated, targeting `dev-branch` or `prod-branch`) → `test_code_quality` → `smoke_test_release_build` → `build_firebase_apk` → `deploy_firebase_distribution`. A disposable testing build for the reviewer — whatever version is currently in `pubspec.yaml` is fine, Firebase doesn't care and this build never ships.
+- **`push`** (i.e. the PR merged) → `resolve_version` (if `enable-auto-versioning`) → `build_release_android` → Play Store deploy (internal on `dev-branch`, production on `prod-branch`). **This is the only point where the version advances** — PR-time Firebase builds intentionally don't touch it.
 
-**`ensure-env-file: true`** — set this if the app uses `flutter_dotenv` with `.env` declared as a `pubspec.yaml` asset. Without it, every `flutter build`/`flutter test`/`shorebird` step fails with `No file or variants found for asset: .env` because CI has no real `.env` (it's gitignored). This threads through to every job that actually builds/tests the app (`test_code_quality`, `smoke_test_release_build`, `build_release_android`, `build_firebase_apk`, `build_patch_shorebird`); the deploy jobs don't need it since they only download prebuilt artifacts.
+Each release channel (`enable-shorebird`, `enable-firebase-distribution`, `enable-play-store`) is off by default — an app only pays for (and only needs secrets for) the channels it enables. `enable-shorebird` here only controls whether `build_release_android` registers the release with Shorebird (`shorebird release android`, making it OTA-patchable later) — it does not create patches. See `flutter-shorebird-patch.yml` below for that.
+
+**Fail-fast job order (PR path):** cheapest checks run first so a doomed PR build fails sooner, not after a full multi-arch build. `test_code_quality` (analyze/test) gates `smoke_test_release_build` (a single-ABI, minified `flutter build apk`, exercises the exact signing + R8/ProGuard pass the full Firebase build uses) which gates `build_firebase_apk`. Every job also has a `timeout-minutes` ceiling (10-35 min depending on the job) — this is a safety net against a genuine hang, not a duration SLA, so it's sized generously against slow/cold runners rather than tightly against expected run time.
+
+**`ensure-env-file: true`** — set this if the app uses `flutter_dotenv` with `.env` declared as a `pubspec.yaml` asset. Without it, every `flutter build`/`flutter test`/`shorebird` step fails with `No file or variants found for asset: .env` because CI has no real `.env` (it's gitignored). This threads through to every job that actually builds/tests the app; the deploy jobs don't need it since they only download prebuilt artifacts.
 
 ```yaml
 jobs:
@@ -108,6 +113,30 @@ secrets:
 `CI_SECRETS_REPO_TOKEN` is a **fine-grained PAT** with **Contents: Read** on `ci-secrets` only — the job's own `GITHUB_TOKEN` can't check out a different repo, private or not, even under the same account. Same token value can be reused across every consuming app repo, same pattern as `VARS_PAT`.
 
 Each job that builds/deploys decrypts the file at the start of the job (masking every value in the log) and exports it into the job's `env`; if `enable-sops-secrets` is left `false` (the default), those same jobs fall back to reading `secrets.*` exactly as before — the two sources are interchangeable per-app. See `ci-secrets`' own README for how to add/edit/rotate encrypted files.
+
+### `flutter-shorebird-patch.yml`
+Ships a Shorebird OTA patch to an already-released version — **`workflow_dispatch`-only, never automatic.** Shorebird can only patch Dart-only changes (no native code, no new plugin with native bindings, no asset changes — those need a full `flutter-release.yml` release instead), and that's a judgment call only a human can make per-change, so this is deliberately not inferred from git state or wired into any push/PR trigger.
+
+```yaml
+# e.g. an app repo's own .github/workflows/shorebird-patch.yml
+on:
+  workflow_dispatch:
+    inputs:
+      release-version:
+        description: 'Exact release to patch, e.g. 1.0.6+18. Leave empty to patch the current live version.'
+        required: false
+        type: string
+jobs:
+  patch:
+    uses: KameshEas/gha-templates/.github/workflows/flutter-shorebird-patch.yml@v1
+    with:
+      release-version: ${{ inputs.release-version }}
+      enable-sops-secrets: true
+      sops-secrets-file: cashlyze.env
+    secrets: inherit
+```
+
+Trigger it from the Actions tab → Shorebird Patch → Run workflow. Leave `release-version` empty to target whatever's currently in the `ANDROID_VERSION`/`ANDROID_BUILD_NUMBER` repo Variables (the most recently shipped release); pass it explicitly (`1.0.6+18`) to patch an older still-live release instead. Requires `secrets.VARS_PAT` only when `release-version` is left empty (to look up the current version).
 
 ## Composite actions
 

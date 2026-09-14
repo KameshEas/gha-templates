@@ -1,0 +1,128 @@
+name: Flutter Shorebird Patch (reusable)
+
+# Deliberately NOT wired into push/PR triggers. Shorebird can only patch
+# Dart-only changes -- any native code, new plugin with native bindings, or
+# asset change needs a brand-new release instead, and that's a judgment call
+# only a human can safely make per-change. So this is workflow_dispatch-only:
+# call it explicitly from the app repo when you know a change is patch-safe.
+
+on:
+  workflow_call:
+    inputs:
+      release-version:
+        description: >
+          Exact release to patch, e.g. "1.0.6+18" (MAJOR.MINOR.PATCH+BUILD).
+          Leave empty to patch whatever is currently in the
+          version-variable/build-number-variable repo Variables (the most
+          recently shipped release).
+        type: string
+        default: ""
+      version-variable:
+        type: string
+        default: ANDROID_VERSION
+      build-number-variable:
+        type: string
+        default: ANDROID_BUILD_NUMBER
+      ensure-env-file:
+        type: boolean
+        default: false
+      enable-sops-secrets:
+        type: boolean
+        default: false
+      sops-secrets-repo:
+        type: string
+        default: KameshEas/ci-secrets
+      sops-secrets-file:
+        type: string
+        default: ""
+      sops-secrets-ref:
+        type: string
+        default: master
+    secrets:
+      SHOREBIRD_TOKEN:
+        required: false
+      VARS_PAT:
+        description: Fine-grained PAT with "Variables Read and write", required when release-version is left empty (reads the current version from repo Variables)
+        required: false
+      SOPS_AGE_KEY:
+        required: false
+      CI_SECRETS_REPO_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  patch:
+    name: patch
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/flutter:stable
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - if: inputs.enable-sops-secrets
+        uses: KameshEas/gha-templates/.github/actions/decrypt-sops-secrets@v1
+        with:
+          secrets-repo: ${{ inputs.sops-secrets-repo }}
+          secrets-file: ${{ inputs.sops-secrets-file }}
+          ref: ${{ inputs.sops-secrets-ref }}
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
+          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
+
+      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+        with:
+          ensure-env-file: ${{ inputs.ensure-env-file }}
+
+      - name: Install Shorebird
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/shorebirdtech/install/main/install.sh | bash
+          echo "$HOME/.shorebird/bin" >> $GITHUB_PATH
+
+      - name: Publish patch
+        env:
+          SHOREBIRD_TOKEN: ${{ inputs.enable-sops-secrets && env.SHOREBIRD_TOKEN || secrets.SHOREBIRD_TOKEN }}
+          GH_TOKEN: ${{ secrets.VARS_PAT }}
+          RELEASE_VERSION_INPUT: ${{ inputs.release-version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+
+          if [ -n "$RELEASE_VERSION_INPUT" ]; then
+            RELEASE_VERSION="$RELEASE_VERSION_INPUT"
+          else
+            VERSION=$(curl -sS \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/variables/${{ inputs.version-variable }}" \
+              | grep -o '"value"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+              | sed 's/^"value"[[:space:]]*:[[:space:]]*"//; s/"$//')
+            BUILD_NUMBER=$(curl -sS \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/variables/${{ inputs.build-number-variable }}" \
+              | grep -o '"value"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+              | sed 's/^"value"[[:space:]]*:[[:space:]]*"//; s/"$//')
+
+            if [ -z "$VERSION" ] || [ -z "$BUILD_NUMBER" ]; then
+              echo "❌ Could not read ${{ inputs.version-variable }}/${{ inputs.build-number-variable }} from repo Variables, and no release-version input was given."
+              exit 1
+            fi
+            RELEASE_VERSION="${VERSION}+${BUILD_NUMBER}"
+          fi
+
+          echo "🐦 Creating OTA Patch for release ${RELEASE_VERSION}"
+          echo "   (this only ships if the change is Dart-only -- no native code,"
+          echo "    new plugins, or asset changes. If unsure, ship a full release instead.)"
+
+          shorebird patch \
+            --platforms=android \
+            --release-version="$RELEASE_VERSION" \
+            --no-confirm
+
+          echo "✅ OTA Patch Published for ${RELEASE_VERSION}"
