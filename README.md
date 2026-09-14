@@ -92,15 +92,20 @@ secrets: inherit
 Requires `secrets.VARS_PAT` — a **fine-grained PAT** with **Variables: Read and write** on the repo (the automatic `GITHUB_TOKEN` is explicitly blocked from managing Actions Variables, even with `actions: write` permission). Bootstrap the two Variables to the app's current version/build number before first use, or the action will bootstrap them from `pubspec.yaml` itself on first run — either way, once enabled, `pubspec.yaml`'s `version:` line is no longer authoritative; check the `ANDROID_VERSION`/`ANDROID_BUILD_NUMBER` repo Variables for the real shipped version.
 
 #### Optional: sourcing secrets from an encrypted file instead of GitHub Secrets (`enable-sops-secrets: true`)
-Instead of setting `ANDROID_KEYSTORE_BASE64`/`SHOREBIRD_TOKEN`/`FIREBASE_*`/`GCLOUD_*`/`PACKAGE_NAME` individually through the GitHub Secrets UI, source them all from one [SOPS](https://github.com/getsops/sops)-encrypted `.env` file checked into a dedicated repo (`KameshEas/ci-secrets` by default) — safe to be public, since the file is ciphertext without the decryption key.
+Instead of setting `ANDROID_KEYSTORE_BASE64`/`SHOREBIRD_TOKEN`/`FIREBASE_*`/`GCLOUD_*`/`PACKAGE_NAME` individually through the GitHub Secrets UI, source them all from one [SOPS](https://github.com/getsops/sops)-encrypted `.env` file checked into a dedicated repo (`KameshEas/ci-secrets` by default). The file is ciphertext either way, but **`ci-secrets` is private**, so every consuming repo also needs read access to it.
 
 ```yaml
 with:
   enable-sops-secrets: true
   sops-secrets-file: cashlyze.env   # sops-secrets-repo defaults to KameshEas/ci-secrets
 secrets:
-  SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}   # still a real per-repo GitHub Secret — this is the one thing that can't itself be in the encrypted file
+  SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}                     # decrypts the file
+  CI_SECRETS_REPO_TOKEN: ${{ secrets.CI_SECRETS_REPO_TOKEN }}   # lets this repo's job check out the private ci-secrets repo
 ```
+
+(`secrets: inherit` covers both automatically once they exist as real secrets on the calling repo — no need to name them individually as above unless you're passing secrets selectively.)
+
+`CI_SECRETS_REPO_TOKEN` is a **fine-grained PAT** with **Contents: Read** on `ci-secrets` only — the job's own `GITHUB_TOKEN` can't check out a different repo, private or not, even under the same account. Same token value can be reused across every consuming app repo, same pattern as `VARS_PAT`.
 
 Each job that builds/deploys decrypts the file at the start of the job (masking every value in the log) and exports it into the job's `env`; if `enable-sops-secrets` is left `false` (the default), those same jobs fall back to reading `secrets.*` exactly as before — the two sources are interchangeable per-app. See `ci-secrets`' own README for how to add/edit/rotate encrypted files.
 
