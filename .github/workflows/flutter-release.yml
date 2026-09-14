@@ -83,6 +83,7 @@ jobs:
   detect_version_change:
     name: detect_version_change
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: github.event_name == 'push'
     outputs:
       version_changed: ${{ steps.check.outputs.changed }}
@@ -115,6 +116,7 @@ jobs:
     name: resolve_version
     needs: detect_version_change
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     concurrency:
       group: version-resolve-${{ github.repository }}
       cancel-in-progress: false
@@ -139,6 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
+    timeout-minutes: 10
     if: "!contains(github.ref, 'tags')"
     steps:
       - uses: actions/checkout@v4
@@ -153,17 +156,65 @@ jobs:
         shell: bash
         run: flutter test
 
+  # Cheap, single-ABI, minified release build — exercises the exact signing +
+  # R8/minify pass that the full multi-arch build below does, but on one
+  # architecture and as a plain APK (no AAB bundling, no Shorebird). Catches
+  # keystore/signing/ProGuard misconfiguration in ~3-4 min instead of the
+  # 7-10 min a full multi-arch release build takes to fail on the same error.
+  smoke_test_release_build:
+    name: smoke_test_release_build
+    needs: [detect_version_change, resolve_version, test_code_quality]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/flutter:stable
+    timeout-minutes: 10
+    if: |
+      always() &&
+      (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
+      (needs.test_code_quality.result == 'success' || needs.test_code_quality.result == 'skipped') &&
+      github.event_name == 'push' && (inputs.enable-shorebird || inputs.enable-firebase-distribution || inputs.enable-play-store) &&
+      (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
+       (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
+    steps:
+      - uses: actions/checkout@v4
+      - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
+
+      - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
+        with:
+          keystore-filename: ${{ inputs.keystore-filename }}
+          keystore-base64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          key-alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          store-password: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          key-password: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Fast single-ABI release build (smoke test)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ANDROID_KEYSTORE_PATH:-}" ] || [ ! -f "$ANDROID_KEYSTORE_PATH" ]; then
+            echo "❌ Keystore was not decoded (ANDROID_KEYSTORE_BASE64 secret missing or invalid)."
+            exit 1
+          fi
+
+          echo "🔥 Smoke-testing signing + R8/minify on a single ABI before the full release build..."
+          flutter build apk --release --target-platform=android-arm64
+          echo "✅ Smoke build passed — proceeding to the full release build(s)."
+
   # Builds the release AAB. Uses Shorebird when enabled (registers an OTA-patchable
   # release); otherwise a plain `flutter build appbundle`. Runs whenever the AAB is
   # needed downstream (Shorebird release itself, or a Play Store deploy).
   build_release_android:
     name: build_release_android
-    needs: [detect_version_change, resolve_version]
+    needs: [detect_version_change, resolve_version, smoke_test_release_build]
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
+    timeout-minutes: 20
     if: |
-      always() && (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
+      always() &&
+      (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
+      (needs.smoke_test_release_build.result == 'success' || needs.smoke_test_release_build.result == 'skipped') &&
       github.event_name == 'push' && (inputs.enable-shorebird || inputs.enable-play-store) &&
       (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
        (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
@@ -237,12 +288,15 @@ jobs:
 
   build_firebase_apk:
     name: build_firebase_apk
-    needs: [detect_version_change, resolve_version]
+    needs: [detect_version_change, resolve_version, smoke_test_release_build]
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
+    timeout-minutes: 15
     if: |
-      always() && (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
+      always() &&
+      (needs.resolve_version.result == 'success' || needs.resolve_version.result == 'skipped') &&
+      (needs.smoke_test_release_build.result == 'success' || needs.smoke_test_release_build.result == 'skipped') &&
       github.event_name == 'push' && inputs.enable-firebase-distribution &&
       (github.ref == format('refs/heads/{0}', inputs.dev-branch) ||
        (github.ref == format('refs/heads/{0}', inputs.prod-branch) && needs.detect_version_change.outputs.version_changed == 'true'))
@@ -302,6 +356,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
+    timeout-minutes: 15
     if: |
       github.event_name == 'push' && inputs.enable-shorebird &&
       github.ref == format('refs/heads/{0}', inputs.prod-branch) &&
@@ -353,6 +408,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
+    timeout-minutes: 10
     if: github.event_name == 'push' && inputs.enable-firebase-distribution && github.ref == format('refs/heads/{0}', inputs.dev-branch)
     environment: development
     steps:
@@ -423,6 +479,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
+    timeout-minutes: 10
     if: github.event_name == 'push' && inputs.enable-play-store && github.ref == format('refs/heads/{0}', inputs.dev-branch)
     environment: development
     steps:
@@ -492,6 +549,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/flutter:stable
+    timeout-minutes: 10
     if: |
       github.event_name == 'push' && inputs.enable-play-store &&
       github.ref == format('refs/heads/{0}', inputs.prod-branch) &&

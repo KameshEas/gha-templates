@@ -29,6 +29,8 @@ jobs:
 ### `flutter-release.yml`
 Version-gated Android build → optional Shorebird OTA release/patch → optional Firebase App Distribution → optional Google Play Console deploy (internal on `dev-branch`, production on `prod-branch`). Each release channel is off by default — an app only pays for (and only needs secrets for) the channels it enables.
 
+**Fail-fast job order:** cheapest checks run first so a doomed release fails in minutes, not after a full multi-arch build. `test_code_quality` (analyze/test, ~1-2 min) gates `smoke_test_release_build` (a single-ABI, minified `flutter build apk`, ~3-4 min, exercises the exact signing + R8/ProGuard pass the full build uses) which gates the expensive multi-arch `build_release_android`/`build_firebase_apk` jobs (~7-10 min). Every job also has a `timeout-minutes` ceiling so a hang can't run indefinitely.
+
 ```yaml
 jobs:
   release:
