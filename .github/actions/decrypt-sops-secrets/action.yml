@@ -1,8 +1,8 @@
 name: Decrypt SOPS secrets
 description: >
-  Checks out one dotenv file from a (public, safe-to-be-public since encrypted)
-  ci-secrets repo, decrypts it with age via sops, masks every value in the log,
-  and exports it into GITHUB_ENV for later steps in the same job to consume.
+  Checks out one dotenv file from a ci-secrets-style repo (public or private —
+  pass repo-token for private), decrypts it with age via sops, masks every
+  value in the log, and exports it into GITHUB_ENV for later steps to consume.
 
 inputs:
   secrets-repo:
@@ -18,6 +18,13 @@ inputs:
   age-key:
     description: The AGE-SECRET-KEY-... value (pass secrets.SOPS_AGE_KEY)
     required: true
+  repo-token:
+    description: >
+      Fine-grained PAT with Contents: Read on secrets-repo. Required when that
+      repo is private — the job's own GITHUB_TOKEN can't reach a different
+      repo, even under the same account. Leave empty for a public repo.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -28,6 +35,7 @@ runs:
         repository: ${{ inputs.secrets-repo }}
         ref: ${{ inputs.ref }}
         path: .ci-secrets
+        token: ${{ inputs.repo-token || github.token }}
 
     - name: Install sops
       shell: bash

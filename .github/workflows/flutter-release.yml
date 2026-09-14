@@ -97,6 +97,9 @@ on:
       SOPS_AGE_KEY:
         description: age private key (AGE-SECRET-KEY-...) that decrypts sops-secrets-file, required when enable-sops-secrets is true
         required: false
+      CI_SECRETS_REPO_TOKEN:
+        description: Fine-grained PAT with Contents:Read on sops-secrets-repo, required when enable-sops-secrets is true and that repo is private
+        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -212,6 +215,7 @@ jobs:
           secrets-repo: ${{ inputs.sops-secrets-repo }}
           secrets-file: ${{ inputs.sops-secrets-file }}
           age-key: ${{ secrets.SOPS_AGE_KEY }}
+          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
 
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
@@ -265,6 +269,7 @@ jobs:
           secrets-repo: ${{ inputs.sops-secrets-repo }}
           secrets-file: ${{ inputs.sops-secrets-file }}
           age-key: ${{ secrets.SOPS_AGE_KEY }}
+          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
 
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
@@ -357,6 +362,7 @@ jobs:
           secrets-repo: ${{ inputs.sops-secrets-repo }}
           secrets-file: ${{ inputs.sops-secrets-file }}
           age-key: ${{ secrets.SOPS_AGE_KEY }}
+          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
 
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
@@ -428,6 +434,7 @@ jobs:
           secrets-repo: ${{ inputs.sops-secrets-repo }}
           secrets-file: ${{ inputs.sops-secrets-file }}
           age-key: ${{ secrets.SOPS_AGE_KEY }}
+          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
 
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
@@ -488,6 +495,7 @@ jobs:
           secrets-repo: ${{ inputs.sops-secrets-repo }}
           secrets-file: ${{ inputs.sops-secrets-file }}
           age-key: ${{ secrets.SOPS_AGE_KEY }}
+          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
 
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
@@ -567,6 +575,7 @@ jobs:
           secrets-repo: ${{ inputs.sops-secrets-repo }}
           secrets-file: ${{ inputs.sops-secrets-file }}
           age-key: ${{ secrets.SOPS_AGE_KEY }}
+          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           restore-cache: "false"
@@ -647,6 +656,7 @@ jobs:
           secrets-repo: ${{ inputs.sops-secrets-repo }}
           secrets-file: ${{ inputs.sops-secrets-file }}
           age-key: ${{ secrets.SOPS_AGE_KEY }}
+          repo-token: ${{ secrets.CI_SECRETS_REPO_TOKEN }}
 
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
