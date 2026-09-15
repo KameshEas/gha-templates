@@ -86,6 +86,16 @@ on:
         description: Branch/tag/sha of sops-secrets-repo to check out
         type: string
         default: master
+      no-tree-shake-icons:
+        description: >
+          Pass --no-tree-shake-icons to every flutter build invocation. Needed
+          by apps with non-constant IconData lookups (icon values computed at
+          runtime, e.g. from an enum) -- Flutter's icon tree-shaker can't
+          resolve those at compile time and the release build fails outright
+          without this. See the app's own CLAUDE.md/docs for its specific
+          known non-const usages before assuming this is needed.
+        type: boolean
+        default: false
     secrets:
       ANDROID_KEYSTORE_BASE64:
         required: false
@@ -226,8 +236,13 @@ jobs:
             exit 1
           fi
 
+          ICON_FLAGS=""
+          if [ "${{ inputs.no-tree-shake-icons }}" = "true" ]; then
+            ICON_FLAGS="--no-tree-shake-icons"
+          fi
+
           echo "🔥 Smoke-testing signing + R8/minify on a single ABI before the full Firebase build..."
-          flutter build apk --release --target-platform=android-arm64
+          flutter build apk --release --target-platform=android-arm64 $ICON_FLAGS
           echo "✅ Smoke build passed — proceeding to the full build."
 
   # PR-time only: a disposable testing APK for reviewers. Whatever version is
@@ -283,11 +298,17 @@ jobs:
           BUILD_NAME=$(echo "$PKG_VER" | cut -d+ -f1)
           BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
 
+          ICON_FLAGS=""
+          if [ "${{ inputs.no-tree-shake-icons }}" = "true" ]; then
+            ICON_FLAGS="--no-tree-shake-icons"
+          fi
+
           echo "📱 Building Firebase testing APK (version ${BUILD_NAME}+${BUILD_NUMBER}, not a shipped version)..."
           flutter build apk \
             --release \
             --build-name="$BUILD_NAME" \
-            --build-number="$BUILD_NUMBER"
+            --build-number="$BUILD_NUMBER" \
+            $ICON_FLAGS
 
           echo ""
           echo "📦 Verifying APK..."
@@ -471,16 +492,23 @@ jobs:
           fi
           echo "Building version ${BUILD_NAME}+${BUILD_NUMBER}"
 
+          ICON_FLAGS=""
+          if [ "${{ inputs.no-tree-shake-icons }}" = "true" ]; then
+            ICON_FLAGS="--no-tree-shake-icons"
+          fi
+
           if [ "${{ inputs.enable-shorebird }}" = "true" ]; then
             echo "🐦 Building Shorebird AAB..."
             shorebird release android \
               --build-name="$BUILD_NAME" \
               --build-number="$BUILD_NUMBER" \
-              --no-confirm
+              --no-confirm \
+              $ICON_FLAGS
           else
             echo "📦 Building plain AAB..."
             flutter build appbundle \
               --release \
+              $ICON_FLAGS \
               --build-name="$BUILD_NAME" \
               --build-number="$BUILD_NUMBER"
           fi
