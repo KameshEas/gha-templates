@@ -96,6 +96,15 @@ on:
           known non-const usages before assuming this is needed.
         type: boolean
         default: false
+      enable-google-services-json:
+        description: >
+          Write secrets.GOOGLE_SERVICES_JSON to android/app/google-services.json
+          before any Gradle build step. Only needed for apps whose copy of that
+          file is gitignored rather than committed (Cashlyze commits its own,
+          so doesn't need this) -- the Google Services Gradle plugin fails the
+          build outright if the file isn't present at all.
+        type: boolean
+        default: false
     secrets:
       ANDROID_KEYSTORE_BASE64:
         required: false
@@ -125,6 +134,9 @@ on:
         required: false
       CI_SECRETS_REPO_TOKEN:
         description: Fine-grained PAT with Contents:Read on sops-secrets-repo, required when enable-sops-secrets is true and that repo is private
+        required: false
+      GOOGLE_SERVICES_JSON:
+        description: Contents of android/app/google-services.json, required when enable-google-services-json is true
         required: false
 
 concurrency:
@@ -218,6 +230,13 @@ jobs:
         with:
           ensure-env-file: ${{ inputs.ensure-env-file }}
 
+      - if: inputs.enable-google-services-json
+        name: Write google-services.json
+        shell: bash
+        run: |
+          mkdir -p android/app
+          printf %s "${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}" > android/app/google-services.json
+
       - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
         with:
           keystore-filename: ${{ inputs.keystore-filename }}
@@ -275,6 +294,13 @@ jobs:
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           ensure-env-file: ${{ inputs.ensure-env-file }}
+
+      - if: inputs.enable-google-services-json
+        name: Write google-services.json
+        shell: bash
+        run: |
+          mkdir -p android/app
+          printf %s "${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}" > android/app/google-services.json
 
       - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
         with:
@@ -454,6 +480,13 @@ jobs:
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           ensure-env-file: ${{ inputs.ensure-env-file }}
+
+      - if: inputs.enable-google-services-json
+        name: Write google-services.json
+        shell: bash
+        run: |
+          mkdir -p android/app
+          printf %s "${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}" > android/app/google-services.json
 
       - if: inputs.enable-shorebird
         name: Install Shorebird
