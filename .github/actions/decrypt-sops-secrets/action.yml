@@ -64,11 +64,13 @@ runs:
           exit 1
         fi
 
+        DECRYPTED_LINE_COUNT=0
         while IFS= read -r line; do
           # Strip a trailing \r in case the plaintext source had CRLF line endings
           # (e.g. saved from Notepad/PowerShell on Windows) — bash's read only
           # splits on \n, so a stray \r would otherwise end up baked into the value.
           line="${line%$'\r'}"
+          DECRYPTED_LINE_COUNT=$((DECRYPTED_LINE_COUNT + 1))
           case "$line" in
             ''|'#'*) continue ;;
           esac
@@ -76,6 +78,11 @@ runs:
           value="${line#*=}"
           echo "::add-mask::${value}"
           echo "${key}=${value}" >> "$GITHUB_ENV"
+          # Diagnostic only: field name + length, never the value itself. Lets
+          # us catch silent truncation between here and wherever a value is
+          # next consumed, without exposing anything sensitive in the log.
+          echo "  · exported ${key} (${#value} chars)"
         done < <(sops -d "$FILE")
 
+        echo "(sops -d produced ${DECRYPTED_LINE_COUNT} raw lines total, including blanks/comments)"
         echo "✅ Decrypted ${{ inputs.secrets-file }} and exported its keys (values masked in logs)."

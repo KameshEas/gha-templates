@@ -138,6 +138,12 @@ jobs:
 
 Trigger it from the Actions tab → Shorebird Patch → Run workflow. Leave `release-version` empty to target whatever's currently in the `ANDROID_VERSION`/`ANDROID_BUILD_NUMBER` repo Variables (the most recently shipped release); pass it explicitly (`1.0.6+18`) to patch an older still-live release instead. Requires `secrets.VARS_PAT` only when `release-version` is left empty (to look up the current version).
 
+#### Per-app quirks you may need to opt into
+Two `flutter-release.yml` inputs exist specifically because not every app's repo looks the same — both default `false` so they're opt-in per app, not global behavior:
+
+- **`no-tree-shake-icons: true`** — set this if the app has non-constant `IconData` lookups (icon values computed at runtime, e.g. from an enum rather than a literal). Flutter's icon tree-shaker can't resolve those at compile time and the release build fails outright without `--no-tree-shake-icons`. DayZen needs this (see its own `CLAUDE.md` "Known Issues #1"); Cashlyze doesn't.
+- **`enable-google-services-json: true`** + `secrets.GOOGLE_SERVICES_JSON` (or the SOPS-encrypted `GOOGLE_SERVICES_JSON` field) — set this if `android/app/google-services.json` is gitignored rather than committed. The Google Services Gradle plugin fails the build outright if the file isn't present at all, and CI obviously doesn't have a gitignored file. Cashlyze commits its copy to git, so doesn't need this; DayZen and EverWith (both gitignore it) do.
+
 ## Composite actions
 
 - `setup-flutter` — installs JDK 17, restores pub/gradle caches, runs `flutter pub get`. `ensure-env-file: true` opt-in for apps using `flutter_dotenv`.
