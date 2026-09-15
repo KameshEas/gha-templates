@@ -233,9 +233,11 @@ jobs:
       - if: inputs.enable-google-services-json
         name: Write google-services.json
         shell: bash
+        env:
+          GOOGLE_SERVICES_JSON_CONTENT: ${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}
         run: |
           mkdir -p android/app
-          printf %s "${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}" > android/app/google-services.json
+          printf '%s' "$GOOGLE_SERVICES_JSON_CONTENT" > android/app/google-services.json
 
       - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
         with:
@@ -298,9 +300,11 @@ jobs:
       - if: inputs.enable-google-services-json
         name: Write google-services.json
         shell: bash
+        env:
+          GOOGLE_SERVICES_JSON_CONTENT: ${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}
         run: |
           mkdir -p android/app
-          printf %s "${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}" > android/app/google-services.json
+          printf '%s' "$GOOGLE_SERVICES_JSON_CONTENT" > android/app/google-services.json
 
       - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
         with:
@@ -484,9 +488,11 @@ jobs:
       - if: inputs.enable-google-services-json
         name: Write google-services.json
         shell: bash
+        env:
+          GOOGLE_SERVICES_JSON_CONTENT: ${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}
         run: |
           mkdir -p android/app
-          printf %s "${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}" > android/app/google-services.json
+          printf '%s' "$GOOGLE_SERVICES_JSON_CONTENT" > android/app/google-services.json
 
       - if: inputs.enable-shorebird
         name: Install Shorebird
