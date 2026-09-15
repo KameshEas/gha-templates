@@ -236,8 +236,14 @@ jobs:
         env:
           GOOGLE_SERVICES_JSON_CONTENT: ${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}
         run: |
+          set -euo pipefail
           mkdir -p android/app
+          echo "google-services.json content received: ${#GOOGLE_SERVICES_JSON_CONTENT} chars"
           printf '%s' "$GOOGLE_SERVICES_JSON_CONTENT" > android/app/google-services.json
+          echo "google-services.json written to disk: $(wc -c < android/app/google-services.json) bytes"
+          if ! node -e "JSON.parse(require("fs").readFileSync("android/app/google-services.json", "utf8"))" 2>/dev/null; then
+            echo "WARNING: written google-services.json is not valid JSON -- compare the two lengths above to see where it broke."
+          fi
 
       - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
         with:
@@ -303,8 +309,14 @@ jobs:
         env:
           GOOGLE_SERVICES_JSON_CONTENT: ${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}
         run: |
+          set -euo pipefail
           mkdir -p android/app
+          echo "google-services.json content received: ${#GOOGLE_SERVICES_JSON_CONTENT} chars"
           printf '%s' "$GOOGLE_SERVICES_JSON_CONTENT" > android/app/google-services.json
+          echo "google-services.json written to disk: $(wc -c < android/app/google-services.json) bytes"
+          if ! node -e "JSON.parse(require("fs").readFileSync("android/app/google-services.json", "utf8"))" 2>/dev/null; then
+            echo "WARNING: written google-services.json is not valid JSON -- compare the two lengths above to see where it broke."
+          fi
 
       - uses: KameshEas/gha-templates/.github/actions/decode-android-keystore@v1
         with:
@@ -491,8 +503,14 @@ jobs:
         env:
           GOOGLE_SERVICES_JSON_CONTENT: ${{ inputs.enable-sops-secrets && env.GOOGLE_SERVICES_JSON || secrets.GOOGLE_SERVICES_JSON }}
         run: |
+          set -euo pipefail
           mkdir -p android/app
+          echo "google-services.json content received: ${#GOOGLE_SERVICES_JSON_CONTENT} chars"
           printf '%s' "$GOOGLE_SERVICES_JSON_CONTENT" > android/app/google-services.json
+          echo "google-services.json written to disk: $(wc -c < android/app/google-services.json) bytes"
+          if ! node -e "JSON.parse(require("fs").readFileSync("android/app/google-services.json", "utf8"))" 2>/dev/null; then
+            echo "WARNING: written google-services.json is not valid JSON -- compare the two lengths above to see where it broke."
+          fi
 
       - if: inputs.enable-shorebird
         name: Install Shorebird
