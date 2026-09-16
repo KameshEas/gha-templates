@@ -338,7 +338,16 @@ jobs:
 
           PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
           BUILD_NAME=$(echo "$PKG_VER" | cut -d+ -f1)
-          BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
+          # pubspec.yaml's version may or may not carry a "+buildNumber" suffix.
+          # Firebase testing builds don't need a real/incrementing build number
+          # (that's only enforced by Play Store), so fall back to the run number
+          # when pubspec.yaml has none, rather than letting `cut` silently hand
+          # back the whole (non-numeric) version string as the "build number".
+          if [[ "$PKG_VER" == *"+"* ]]; then
+            BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
+          else
+            BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+          fi
 
           ICON_FLAGS=""
           if [ "${{ inputs.no-tree-shake-icons }}" = "true" ]; then
@@ -545,7 +554,11 @@ jobs:
           else
             PKG_VER=$(grep '^version:' pubspec.yaml | head -n1 | sed 's/version: //; s/"//g')
             BUILD_NAME=$(echo "$PKG_VER" | cut -d+ -f1)
-            BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
+            if [[ "$PKG_VER" == *"+"* ]]; then
+              BUILD_NUMBER=$(echo "$PKG_VER" | cut -d+ -f2)
+            else
+              BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+            fi
           fi
           echo "Building version ${BUILD_NAME}+${BUILD_NUMBER}"
 
