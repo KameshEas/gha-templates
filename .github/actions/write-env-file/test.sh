@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Tests for write-env-file.sh. Run from anywhere:  bash test.sh
+# Tests for the write-env-file action. Run from anywhere:  bash test.sh
+#
+# The action's script is inline in action.yml, so this extracts the `run:` block and
+# tests exactly what the workflow executes.
 set -uo pipefail
 
-SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/write-env-file.sh"
+ACTION="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/action.yml"
+SCRIPT="$(mktemp)"
+sed -n '/^      run: |$/,$p' "$ACTION" | tail -n +2 | sed 's/^        //' > "$SCRIPT"
+if [ ! -s "$SCRIPT" ]; then echo "could not extract the script from action.yml"; exit 1; fi
 pass=0
 fail=0
 
@@ -76,6 +82,12 @@ echo "running twice is idempotent"
 SEED="" run "K" K=v
 ( cd "$DIR" && env -i PATH="$PATH" ENV_FILE_KEYS=K K=v bash "$SCRIPT" >/dev/null 2>&1 )
 check "still exactly one K line" "$([ "$(grep -c '^K=' "$DIR/.env")" -eq 1 ]; echo $?)"
+
+echo "the action does not depend on a script file or github.action_path (breaks in container jobs)"
+CODE="$(grep -v '^[[:space:]]*#' "$ACTION")"   # ignore comments, which explain why
+check "no github.action_path" "$(! echo "$CODE" | grep -q 'github.action_path'; echo $?)"
+check "no reference to an external .sh file" "$(! echo "$CODE" | grep -Eq '\.sh( |$|")'; echo $?)"
+check "no GitHub expression inside the script body" "$(! grep -q '\${{' "$SCRIPT"; echo $?)"
 
 echo
 echo "$pass passed, $fail failed"
