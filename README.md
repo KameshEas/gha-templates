@@ -36,6 +36,8 @@ Each release channel (`enable-shorebird`, `enable-firebase-distribution`, `enabl
 
 **Fail-fast job order (PR path):** cheapest checks run first so a doomed PR build fails sooner, not after a full multi-arch build. `test_code_quality` (analyze/test) gates `smoke_test_release_build` (a single-ABI, minified `flutter build apk`, exercises the exact signing + R8/ProGuard pass the full Firebase build uses) which gates `build_firebase_apk`. Every job also has a `timeout-minutes` ceiling (10-35 min depending on the job) — this is a safety net against a genuine hang, not a duration SLA, so it's sized generously against slow/cold runners rather than tightly against expected run time.
 
+**`env-file-keys`** — comma-separated names of environment variables to write into `.env` (e.g. `ONESIGNAL_APP_ID,SENTRY_DSN`). Use it for values in the SOPS secrets file that the app reads through `flutter_dotenv`: `decrypt-sops-secrets` only *exports* them to the job's environment and `ensure-env-file` only copies `.env.example`, so without this the app gets the placeholder (usually empty) value from `.env.example`. Requires `ensure-env-file: true`. Pass the same value to `flutter-shorebird-patch.yml`: `.env` is an asset and Shorebird patches can't change assets. The values end up readable inside the built app, so list only client-side keys (an App ID, a Sentry DSN), never secrets.
+
 **`ensure-env-file: true`** — set this if the app uses `flutter_dotenv` with `.env` declared as a `pubspec.yaml` asset. Without it, every `flutter build`/`flutter test`/`shorebird` step fails with `No file or variants found for asset: .env` because CI has no real `.env` (it's gitignored). This threads through to every job that actually builds/tests the app; the deploy jobs don't need it since they only download prebuilt artifacts.
 
 ```yaml
@@ -147,6 +149,7 @@ Two `flutter-release.yml` inputs exist specifically because not every app's repo
 ## Composite actions
 
 - `setup-flutter` — installs JDK 17, restores pub/gradle caches, runs `flutter pub get`. `ensure-env-file: true` opt-in for apps using `flutter_dotenv`.
+- `write-env-file` — copies the environment variables named in `keys` (comma-separated) into `.env`, replacing any empty placeholder copied from `.env.example`. Only the named variables are written, so signing keys and credentials never end up in the app. Values must be single-line. Its logic lives in `write-env-file.sh`, tested by `bash test.sh` in that folder. Used internally via the `env-file-keys` input below.
 - `decode-android-keystore` — decodes a base64 keystore to `android/app/<keystore-filename>` and exports `ANDROID_KEYSTORE_PATH`/`ANDROID_KEY_ALIAS`/`ANDROID_KEYSTORE_PASSWORD`/`ANDROID_KEY_PASSWORD` env vars for Gradle signing.
 - `setup-node-expo` — Node + npm ci for RN/Expo repos.
 - `resolve-version` — reads/advances the `ANDROID_VERSION`/`ANDROID_BUILD_NUMBER` repo Variables per the odometer rule above and persists the new values via the GitHub API (curl, not the `gh` CLI, so it works in minimal build containers). Used internally by `flutter-release.yml` when `enable-auto-versioning: true`.

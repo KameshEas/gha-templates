@@ -1,0 +1,23 @@
+name: Write env keys into .env
+description: >
+  Copies a chosen list of environment variables (for example ones exported by
+  decrypt-sops-secrets) into the app's .env, so a flutter_dotenv app can read them.
+  Only the named variables are written; the rest of the environment (signing
+  keys, service-account credentials) is never bundled into the app.
+
+inputs:
+  keys:
+    description: >
+      Comma-separated environment variable names to write into .env, e.g.
+      ONESIGNAL_APP_ID,SENTRY_DSN. Empty means do nothing.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Write env keys into .env
+      shell: bash
+      env:
+        ENV_FILE_KEYS: ${{ inputs.keys }}
+      run: bash "${{ github.action_path }}/write-env-file.sh"

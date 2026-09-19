@@ -26,6 +26,13 @@ on:
       ensure-env-file:
         type: boolean
         default: false
+      env-file-keys:
+        description: >
+          Comma-separated environment variable names to copy into .env (see
+          flutter-release.yml). Must match what the release was built with: .env is an
+          asset, and Shorebird patches can't change assets.
+        type: string
+        default: ""
       enable-sops-secrets:
         type: boolean
         default: false
@@ -74,6 +81,11 @@ jobs:
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           ensure-env-file: ${{ inputs.ensure-env-file }}
+
+      - if: inputs.env-file-keys != ''
+        uses: KameshEas/gha-templates/.github/actions/write-env-file@v1
+        with:
+          keys: ${{ inputs.env-file-keys }}
 
       - name: Install Shorebird
         shell: bash

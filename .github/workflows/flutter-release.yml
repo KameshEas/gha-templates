@@ -52,6 +52,16 @@ on:
           "No file or variants found for asset: .env".
         type: boolean
         default: false
+      env-file-keys:
+        description: >
+          Comma-separated environment variable names to copy into .env after it is
+          created, e.g. "ONESIGNAL_APP_ID,SENTRY_DSN". Needed for values that live in
+          the SOPS secrets file: decrypt-sops-secrets only exports them to the job
+          environment, and a flutter_dotenv app can't read that. Only the listed names
+          are written, so signing keys and credentials never end up in the app.
+          Requires ensure-env-file. Empty (default) writes nothing.
+        type: string
+        default: ""
       enable-auto-versioning:
         description: >
           Resolve version + build number from repo Variables instead of pubspec.yaml,
@@ -230,6 +240,11 @@ jobs:
         with:
           ensure-env-file: ${{ inputs.ensure-env-file }}
 
+      - if: inputs.env-file-keys != ''
+        uses: KameshEas/gha-templates/.github/actions/write-env-file@v1
+        with:
+          keys: ${{ inputs.env-file-keys }}
+
       - if: inputs.enable-google-services-json
         name: Write google-services.json
         shell: bash
@@ -302,6 +317,11 @@ jobs:
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           ensure-env-file: ${{ inputs.ensure-env-file }}
+
+      - if: inputs.env-file-keys != ''
+        uses: KameshEas/gha-templates/.github/actions/write-env-file@v1
+        with:
+          keys: ${{ inputs.env-file-keys }}
 
       - if: inputs.enable-google-services-json
         name: Write google-services.json
@@ -505,6 +525,11 @@ jobs:
       - uses: KameshEas/gha-templates/.github/actions/setup-flutter@v1
         with:
           ensure-env-file: ${{ inputs.ensure-env-file }}
+
+      - if: inputs.env-file-keys != ''
+        uses: KameshEas/gha-templates/.github/actions/write-env-file@v1
+        with:
+          keys: ${{ inputs.env-file-keys }}
 
       - if: inputs.enable-google-services-json
         name: Write google-services.json
