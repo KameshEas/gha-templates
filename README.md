@@ -146,6 +146,8 @@ Two `flutter-release.yml` inputs exist specifically because not every app's repo
 - **`no-tree-shake-icons: true`** — set this if the app has non-constant `IconData` lookups (icon values computed at runtime, e.g. from an enum rather than a literal). Flutter's icon tree-shaker can't resolve those at compile time and the release build fails outright without `--no-tree-shake-icons`. DayZen needs this (see its own `CLAUDE.md` "Known Issues #1"); Cashlyze doesn't.
 - **`enable-google-services-json: true`** + `secrets.GOOGLE_SERVICES_JSON` (or the SOPS-encrypted `GOOGLE_SERVICES_JSON` field) — set this if `android/app/google-services.json` is gitignored rather than committed. The Google Services Gradle plugin fails the build outright if the file isn't present at all, and CI obviously doesn't have a gitignored file. Cashlyze commits its copy to git, so doesn't need this; DayZen and EverWith (both gitignore it) do.
 
+**`test-continue-on-error`** (default `true`, opposite polarity from the two above) — `test_code_quality`'s `flutter test` step is non-blocking by default so an incomplete/flaky suite doesn't stop the smoke build, Firebase distribution, or release. Set it to `false` per-app once that app's test suite is trustworthy enough to gate the pipeline on it.
+
 ## Composite actions
 
 - `setup-flutter` — installs JDK 17, restores pub/gradle caches, runs `flutter pub get`. `ensure-env-file: true` opt-in for apps using `flutter_dotenv`.
