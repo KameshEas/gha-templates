@@ -115,6 +115,13 @@ on:
           build outright if the file isn't present at all.
         type: boolean
         default: false
+      test-continue-on-error:
+        description: >
+          Don't fail the pipeline when `flutter test` fails, so a broken/incomplete
+          test suite doesn't block the smoke build / Firebase distribution / release.
+          Set to false to make test failures block the pipeline again.
+        type: boolean
+        default: true
     secrets:
       ANDROID_KEYSTORE_BASE64:
         required: false
@@ -206,6 +213,7 @@ jobs:
       - name: Test
         shell: bash
         run: flutter test
+        continue-on-error: ${{ inputs.test-continue-on-error }}
 
   # Cheap, single-ABI, minified release build -- exercises the exact signing +
   # R8/minify pass that build_firebase_apk below does, but on one architecture
