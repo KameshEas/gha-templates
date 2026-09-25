@@ -122,6 +122,16 @@ on:
           Set to false to make test failures block the pipeline again.
         type: boolean
         default: true
+      enable-sentry-upload:
+        description: >
+          Upload debug symbols (and source maps) to Sentry after the release AAB
+          build, via `dart run sentry_dart_plugin`. Org/project come from the
+          app's pubspec.yaml `sentry:` block. Requires secrets.SENTRY_AUTH_TOKEN
+          and the sentry_dart_plugin dev dependency. Only runs for the real
+          release build, not PR-time smoke/Firebase builds, so uploaded symbols
+          always match a shipped build.
+        type: boolean
+        default: false
     secrets:
       ANDROID_KEYSTORE_BASE64:
         required: false
@@ -154,6 +164,9 @@ on:
         required: false
       GOOGLE_SERVICES_JSON:
         description: Contents of android/app/google-services.json, required when enable-google-services-json is true
+        required: false
+      SENTRY_AUTH_TOKEN:
+        description: Sentry auth token with project:releases scope, required when enable-sentry-upload is true
         required: false
 
 concurrency:
@@ -621,6 +634,23 @@ jobs:
           ls -lh build/app/outputs/bundle/release/
           test -f build/app/outputs/bundle/release/app-release.aab
           echo "✅ AAB build completed."
+
+      - if: inputs.enable-sentry-upload
+        name: Upload debug symbols to Sentry
+        env:
+          # decrypt-sops-secrets exports into the job's $GITHUB_ENV, not the
+          # secrets context - same pattern as FIREBASE_*/GCLOUD_* above.
+          SENTRY_AUTH_TOKEN: ${{ inputs.enable-sops-secrets && env.SENTRY_AUTH_TOKEN || secrets.SENTRY_AUTH_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+            echo "❌ enable-sentry-upload is true but secrets.SENTRY_AUTH_TOKEN is not set."
+            exit 1
+          fi
+          echo "⬆️  Uploading debug symbols to Sentry (org/project read from pubspec.yaml)..."
+          dart run sentry_dart_plugin
+          echo "✅ Sentry upload complete."
 
       - name: artifacts
         uses: actions/upload-artifact@v4

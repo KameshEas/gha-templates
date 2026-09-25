@@ -40,6 +40,8 @@ Each release channel (`enable-shorebird`, `enable-firebase-distribution`, `enabl
 
 **`ensure-env-file: true`** — set this if the app uses `flutter_dotenv` with `.env` declared as a `pubspec.yaml` asset. Without it, every `flutter build`/`flutter test`/`shorebird` step fails with `No file or variants found for asset: .env` because CI has no real `.env` (it's gitignored). This threads through to every job that actually builds/tests the app; the deploy jobs don't need it since they only download prebuilt artifacts.
 
+**`enable-sentry-upload`** — after the release AAB build, runs `dart run sentry_dart_plugin` to upload debug symbols (and source maps, if configured) to Sentry, so crash reports show readable stack traces instead of obfuscated addresses. Needs the `sentry_dart_plugin` dev dependency and a `sentry:` block in `pubspec.yaml` (org/project slugs read from there), plus `secrets.SENTRY_AUTH_TOKEN` (an Internal Integration token with `project:releases` scope). Only runs on the real release build, never on PR-time smoke/Firebase builds, so what's uploaded always matches something actually shipped.
+
 ```yaml
 jobs:
   release:
